@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from modules.ai_generator import (
+    SUPPORTED_PROVIDERS,
+    SUPPORTED_GEMINI_MODELS,
+    SUPPORTED_OPENAI_MODELS,
     SUPPORTED_MODELS,
     TONE_PROFILES,
     generate_linkedin_post,
@@ -333,6 +336,8 @@ if "generated_post" not in st.session_state:
     st.session_state.generated_post = None
 if "current_editor_content" not in st.session_state:
     st.session_state.current_editor_content = ""
+if "post_editor_textarea" not in st.session_state:
+    st.session_state.post_editor_textarea = ""
 if "active_tab_index" not in st.session_state:
     st.session_state.active_tab_index = 0
 if "custom_scraped_data" not in st.session_state:
@@ -343,42 +348,78 @@ if "feed_limit" not in st.session_state:
     st.session_state.feed_limit = 15
 
 
+def set_editor_content(text: str):
+    """Safely updates both session state tracking and the text area widget key."""
+    st.session_state.current_editor_content = text
+    st.session_state.post_editor_textarea = text
+
+
 # ==========================================
 # SIDEBAR: CONFIGURATION & SETTINGS
 # ==========================================
 with st.sidebar:
-    st.markdown("### ⚡ AI Engine Settings")
+    st.markdown("### ⚡ AI Provider & Model")
     
-    # API Key Handling
-    env_api_key = os.getenv("GEMINI_API_KEY", "")
-    api_key_input = st.text_input(
-        "Gemini API Key",
-        value=env_api_key,
-        type="password",
-        help="Reads automatically from .env or paste your Google AI Studio API key.",
+    provider_choice = st.radio(
+        "Select AI Provider",
+        options=SUPPORTED_PROVIDERS,
+        horizontal=True,
+        help="Choose between Google Gemini or OpenAI (ChatGPT).",
     )
-    
-    if api_key_input:
-        st.success("API Key configured", icon="✅")
+
+    if provider_choice == "Google Gemini":
+        env_gemini_key = os.getenv("GEMINI_API_KEY", "")
+        api_key_input = st.text_input(
+            "Gemini API Key",
+            value=env_gemini_key,
+            type="password",
+            help="Reads automatically from .env or paste your Google AI Studio API key.",
+        )
+        if api_key_input:
+            st.success("Gemini API Key configured", icon="✅")
+        else:
+            st.warning("Gemini API Key needed", icon="⚠️")
+            st.caption("[Get a free Gemini API Key](https://aistudio.google.com/)")
+
+        model_options = SUPPORTED_GEMINI_MODELS + ["Custom Model..."]
+        selected_model_choice = st.selectbox(
+            "Gemini Model",
+            options=model_options,
+            index=0,
+            help="gemini-3.7-flash and gemini-3.6-flash provide state-of-the-art reasoning and speed.",
+        )
+        if selected_model_choice == "Custom Model...":
+            selected_model = st.text_input("Custom Model Name", value="gemini-3.7-flash")
+        else:
+            selected_model = selected_model_choice
+
     else:
-        st.warning("API Key needed to generate posts", icon="⚠️")
-        st.caption("[Get a free Gemini API Key](https://aistudio.google.com/)")
+        env_openai_key = os.getenv("OPENAI_API_KEY", "")
+        api_key_input = st.text_input(
+            "OpenAI API Key",
+            value=env_openai_key,
+            type="password",
+            help="Reads automatically from .env or paste your OpenAI API key.",
+        )
+        if api_key_input:
+            st.success("OpenAI API Key configured", icon="✅")
+        else:
+            st.warning("OpenAI API Key needed", icon="⚠️")
+            st.caption("[Get an OpenAI API Key](https://platform.openai.com/api-keys)")
+
+        model_options = SUPPORTED_OPENAI_MODELS + ["Custom Model..."]
+        selected_model_choice = st.selectbox(
+            "ChatGPT / OpenAI Model",
+            options=model_options,
+            index=0,
+            help="gpt-4o and gpt-4o-mini offer top quality and fast generation.",
+        )
+        if selected_model_choice == "Custom Model...":
+            selected_model = st.text_input("Custom Model Name", value="gpt-4o")
+        else:
+            selected_model = selected_model_choice
 
     st.divider()
-    
-    # Model & Generation Parameters
-    model_options = SUPPORTED_MODELS + ["Custom Model..."]
-    selected_model_choice = st.selectbox(
-        "Gemini Model",
-        options=model_options,
-        index=0,
-        help="gemini-3.7-flash and gemini-3.6-flash provide state-of-the-art reasoning and speed.",
-    )
-    
-    if selected_model_choice == "Custom Model...":
-        selected_model = st.text_input("Custom Model Name", value="gemini-3.7-flash")
-    else:
-        selected_model = selected_model_choice
 
     
     selected_tone = st.selectbox(
@@ -479,7 +520,7 @@ st.markdown(
     <div class="hero-container">
         <div class="hero-badge-row">
             <span class="hero-pill"><span class="pulse-dot"></span> LinkedIn API Ready</span>
-            <span class="hero-pill">⚡ Gemini 3.7 / 3.6 Flash Engine</span>
+            <span class="hero-pill">⚡ Gemini 3.7 & ChatGPT (GPT-4o) Engine</span>
             <span class="hero-pill">📡 Live ArXiv & HackerNews Stream</span>
         </div>
         <div class="hero-title">⚡ Daily LinkedIn AI Ghostwriter</div>
@@ -593,9 +634,9 @@ with tab_rss:
                         
                         # Generate post immediately
                         if not api_key_input:
-                            st.error("Please configure your Gemini API Key in the sidebar first!")
+                            st.error(f"Please configure your {provider_choice} API Key in the sidebar first!")
                         else:
-                            with st.spinner("Generating high-signal post with Gemini..."):
+                            with st.spinner(f"Generating high-signal post with {provider_choice} ({selected_model})..."):
                                 result = generate_linkedin_post(
                                     topic_title=story["title"],
                                     topic_content=story["summary"],
@@ -605,10 +646,11 @@ with tab_rss:
                                     model_name=selected_model,
                                     api_key=api_key_input,
                                     temperature=temperature,
+                                    provider=provider_choice,
                                 )
                                 if result["success"]:
                                     st.session_state.generated_post = result["data"]
-                                    st.session_state.current_editor_content = result["data"]["full_assembled_post"]
+                                    set_editor_content(result["data"]["full_assembled_post"])
                                     st.success(f"Post generated with `{result.get('model_used', selected_model)}`! Navigate to 'LinkedIn Post Studio' tab to edit & copy.")
                                 else:
                                     st.error(result["error"])
@@ -689,9 +731,9 @@ with tab_custom:
             
             if st.button("🚀 Generate LinkedIn Post from URL", type="primary", use_container_width=True):
                 if not api_key_input:
-                    st.error("Please configure your Gemini API Key in the sidebar!")
+                    st.error(f"Please configure your {provider_choice} API Key in the sidebar!")
                 else:
-                    with st.spinner("Generating post with Gemini..."):
+                    with st.spinner(f"Generating post with {provider_choice} ({selected_model})..."):
                         res = generate_linkedin_post(
                             topic_title=custom_title,
                             topic_content=custom_content,
@@ -702,6 +744,7 @@ with tab_custom:
                             model_name=selected_model,
                             api_key=api_key_input,
                             temperature=temperature,
+                            provider=provider_choice,
                         )
                         if res["success"]:
                             st.session_state.selected_story = {
@@ -711,7 +754,7 @@ with tab_custom:
                                 "source": "Custom URL",
                             }
                             st.session_state.generated_post = res["data"]
-                            st.session_state.current_editor_content = res["data"]["full_assembled_post"]
+                            set_editor_content(res["data"]["full_assembled_post"])
                             st.success(f"Generated with `{res.get('model_used', selected_model)}`! Head over to the 'LinkedIn Post Studio' tab to refine.")
                         else:
                             st.error(res["error"])
@@ -729,9 +772,9 @@ with tab_custom:
             if not custom_topic_title and not custom_topic_notes:
                 st.warning("Please provide a topic title or notes.")
             elif not api_key_input:
-                st.error("Please configure your Gemini API Key in the sidebar!")
+                st.error(f"Please configure your {provider_choice} API Key in the sidebar!")
             else:
-                with st.spinner("Crafting post..."):
+                with st.spinner(f"Crafting post with {provider_choice} ({selected_model})..."):
                     res = generate_linkedin_post(
                         topic_title=custom_topic_title or "Technical Insight",
                         topic_content=custom_topic_notes,
@@ -742,6 +785,7 @@ with tab_custom:
                         model_name=selected_model,
                         api_key=api_key_input,
                         temperature=temperature,
+                        provider=provider_choice,
                     )
                     if res["success"]:
                         st.session_state.selected_story = {
@@ -751,15 +795,12 @@ with tab_custom:
                             "source": "Manual Input",
                         }
                         st.session_state.generated_post = res["data"]
-                        st.session_state.current_editor_content = res["data"]["full_assembled_post"]
+                        set_editor_content(res["data"]["full_assembled_post"])
                         st.success(f"Post crafted with `{res.get('model_used', selected_model)}`! Switch to 'LinkedIn Post Studio' tab to edit and copy.")
                     else:
                         st.error(res["error"])
 
 
-# ==========================================
-# TAB 3: LINKEDIN POST STUDIO & PREVIEW
-# ==========================================
 # ==========================================
 # TAB 3: LINKEDIN POST STUDIO & PREVIEW
 # ==========================================
@@ -794,7 +835,7 @@ with tab_studio:
                     q_part = f"\n\n{gen_data.get('discussion_question', '')}"
                     tags_part = f"\n\n{' '.join(gen_data.get('hashtags', []))}"
                     new_assembled = f"{gen_data.get('hook_option_1')}\n\n{body_part}{takeaway_part}{q_part}{tags_part}"
-                    st.session_state.current_editor_content = new_assembled
+                    set_editor_content(new_assembled)
                     st.rerun()
 
             with col_h2:
@@ -813,7 +854,7 @@ with tab_studio:
                     q_part = f"\n\n{gen_data.get('discussion_question', '')}"
                     tags_part = f"\n\n{' '.join(gen_data.get('hashtags', []))}"
                     new_assembled = f"{gen_data.get('hook_option_2')}\n\n{body_part}{takeaway_part}{q_part}{tags_part}"
-                    st.session_state.current_editor_content = new_assembled
+                    set_editor_content(new_assembled)
                     st.rerun()
 
     # Two-column layout: Left Editor, Right LinkedIn Feed Mockup
@@ -821,9 +862,13 @@ with tab_studio:
 
     with col_editor:
         st.markdown("#### ✏️ Live Post Editor")
+        
+        # Ensure post_editor_textarea is synchronized with current_editor_content
+        if "post_editor_textarea" not in st.session_state or (not st.session_state.post_editor_textarea and st.session_state.current_editor_content):
+            st.session_state.post_editor_textarea = st.session_state.current_editor_content
+
         edited_text = st.text_area(
             "Edit Post Content",
-            value=st.session_state.current_editor_content,
             placeholder="Type, edit, or paste your LinkedIn post here, or craft one from Tab 1 / Tab 2...",
             height=360,
             label_visibility="collapsed",
@@ -872,8 +917,10 @@ with tab_studio:
                 story_info = st.session_state.selected_story or {}
                 if not story_info.get("title"):
                     st.warning("No base topic found to regenerate. Generate from Tab 1 or Tab 2 first.")
+                elif not api_key_input:
+                    st.error(f"Please configure your {provider_choice} API Key in the sidebar!")
                 else:
-                    with st.spinner("Regenerating new angle..."):
+                    with st.spinner(f"Regenerating new angle with {provider_choice} ({selected_model})..."):
                         res = generate_linkedin_post(
                             topic_title=story_info.get("title", ""),
                             topic_content=story_info.get("content", ""),
@@ -883,10 +930,11 @@ with tab_studio:
                             model_name=selected_model,
                             api_key=api_key_input,
                             temperature=temperature + 0.1 if temperature < 0.9 else 0.8,
+                            provider=provider_choice,
                         )
                         if res["success"]:
                             st.session_state.generated_post = res["data"]
-                            st.session_state.current_editor_content = res["data"]["full_assembled_post"]
+                            set_editor_content(res["data"]["full_assembled_post"])
                             st.rerun()
 
         # Dedicated LinkedIn Publishing Section
@@ -1056,7 +1104,7 @@ with tab_history:
 
                 with c_act2:
                     if st.button("📋 Load into Studio", key=f"load_{d_id}", use_container_width=True):
-                        st.session_state.current_editor_content = draft_body
+                        set_editor_content(draft_body)
                         st.session_state.selected_story = {
                             "title": d["title"],
                             "content": draft_body,

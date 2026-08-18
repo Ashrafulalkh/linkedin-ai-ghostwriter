@@ -122,6 +122,19 @@ class TestAIGeneratorStructure(unittest.TestCase):
         self.assertEqual(len(validated.hashtags), 4)
         self.assertEqual(validated.selected_hook, "Most teams build RAG pipelines wrong.")
 
+    def test_openai_missing_key_error(self):
+        from modules.ai_generator import generate_linkedin_post
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=True):
+            res = generate_linkedin_post(
+                topic_title="Test Topic",
+                topic_content="Test Content",
+                provider="OpenAI (ChatGPT)",
+                api_key="",
+                model_name="gpt-4o-mini",
+            )
+            self.assertFalse(res["success"])
+            self.assertIn("OpenAI API Key is missing", res["error"])
+
 
 class TestLinkedInAPI(unittest.TestCase):
     """Test LinkedIn API helpers."""
@@ -144,3 +157,4 @@ class TestLinkedInAPI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  ghostwriter:
+    build: .
+    container_name: linkedin_ghostwriter
+    restart: always
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data

@@ -11,16 +11,17 @@ from dotenv import load_dotenv
 # Load local environment variables
 load_dotenv()
 
-# Sync Streamlit Cloud secrets into os.environ for universal access
+# Sync Streamlit Cloud secrets into os.environ for universal access (excluding personal user access tokens)
 try:
     if hasattr(st, "secrets"):
         for k, v in st.secrets.items():
-            if isinstance(v, (str, int, float, bool)):
+            if k != "LINKEDIN_ACCESS_TOKEN" and isinstance(v, (str, int, float, bool)):
                 os.environ[k] = str(v)
 except Exception:
     pass
 
 DEFAULT_APP_URL = "https://linkedin-ai-ghostwriter-m86zum63j8lfura4uff6xs.streamlit.app"
+
 
 
 
@@ -521,27 +522,49 @@ with st.sidebar:
     # LinkedIn Account Integration
     st.markdown("### 🔗 LinkedIn Direct Posting")
     client_id_val = os.getenv("LINKEDIN_CLIENT_ID", "")
-    env_linkedin_token = st.session_state.get("linkedin_access_token") or os.getenv("LINKEDIN_ACCESS_TOKEN", "")
+    session_linkedin_token = st.session_state.get("linkedin_access_token", "")
+    session_profile = st.session_state.get("linkedin_profile")
     redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", DEFAULT_APP_URL).rstrip("/")
     encoded_redirect = urllib.parse.quote(redirect_uri_val, safe="")
 
-    # 1-Click OAuth Connect Button
-    if client_id_val:
-        auth_url = (
-            f"https://www.linkedin.com/oauth/v2/authorization?"
-            f"response_type=code&client_id={client_id_val}&redirect_uri={encoded_redirect}&"
-            f"scope=w_member_social%20openid%20profile%20email&state=ghostwriter"
-        )
-        st.link_button("🔗 1-Click Connect LinkedIn", url=auth_url, use_container_width=True)
+    if session_linkedin_token:
+        profile_name = session_profile.get("name", "Connected User") if session_profile else "LinkedIn User"
+        st.success(f"✅ Connected as **{profile_name}**", icon="👤")
+        if st.button("🚪 Disconnect LinkedIn", use_container_width=True):
+            st.session_state.linkedin_access_token = ""
+            st.session_state.linkedin_profile = None
+            st.rerun()
+        linkedin_token_input = session_linkedin_token
     else:
-        st.caption("ℹ️ To enable 1-Click LinkedIn OAuth, configure `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` in Streamlit App Secrets.")
+        # 1-Click OAuth Connect Button
+        if client_id_val:
+            auth_url = (
+                f"https://www.linkedin.com/oauth/v2/authorization?"
+                f"response_type=code&client_id={client_id_val}&redirect_uri={encoded_redirect}&"
+                f"scope=w_member_social%20openid%20profile%20email&state=ghostwriter"
+            )
+            st.link_button("🔗 1-Click Connect LinkedIn", url=auth_url, use_container_width=True)
+        else:
+            st.caption("ℹ️ Configure `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` in Streamlit Secrets to enable 1-Click OAuth.")
 
-    linkedin_token_input = st.text_input(
-        "Or Paste Access Token Manually",
-        value=env_linkedin_token,
-        type="password",
-        help="Access token loaded from environment or manual input.",
-    )
+        linkedin_token_input = st.text_input(
+            "Or Paste Access Token Manually",
+            value="",
+            type="password",
+            help="Your token is private and only stored in this browser tab.",
+        )
+
+        if linkedin_token_input:
+            if st.button("🔍 Verify LinkedIn Account", use_container_width=True):
+                with st.spinner("Connecting to LinkedIn..."):
+                    profile = get_linkedin_user_profile(linkedin_token_input)
+                    if profile["success"]:
+                        st.session_state.linkedin_access_token = linkedin_token_input
+                        st.session_state.linkedin_profile = profile
+                        st.success(f"Connected as **{profile['name']}**!")
+                        st.rerun()
+                    else:
+                        st.error(profile["error"])
     
     env_linkedin_urn = os.getenv("LINKEDIN_AUTHOR_URN", "")
     linkedin_urn_input = st.text_input(
@@ -551,15 +574,6 @@ with st.sidebar:
         help="Optional: Only needed if your token has 'w_member_social' without 'openid/profile'.",
     )
 
-    if linkedin_token_input:
-        if st.button("🔍 Verify LinkedIn Account", use_container_width=True):
-            with st.spinner("Connecting to LinkedIn..."):
-                profile = get_linkedin_user_profile(linkedin_token_input)
-                if profile["success"]:
-                    st.session_state.linkedin_profile = profile
-                    st.success(f"Connected as **{profile['name']}**!")
-                else:
-                    st.error(profile["error"])
 
     
     with st.expander("ℹ️ Redirect URI Configuration"):
@@ -873,10 +887,11 @@ with tab_studio:
     st.subheader("Post Editor & LinkedIn Simulator")
     
     # Active LinkedIn status banner
-    if env_linkedin_token or linkedin_token_input:
+    if session_linkedin_token or linkedin_token_input:
         st.success("🟢 **LinkedIn Connected** — Ready to publish directly to your feed!", icon="🚀")
     else:
         st.info("💡 Tip: Connect your LinkedIn in the sidebar to publish directly with 1 click, or use the Web Composer.")
+
 
     gen_data = st.session_state.generated_post or {}
     
@@ -1008,8 +1023,9 @@ with tab_studio:
         pub_col1, pub_col2 = st.columns([1.2, 1.2])
 
         with pub_col1:
-            active_token = linkedin_token_input or env_linkedin_token
+            active_token = linkedin_token_input or session_linkedin_token
             # Direct API Publishing Button
+
             if st.button("🚀 Publish Directly to My LinkedIn Feed", type="primary", use_container_width=True):
                 if not edited_text.strip():
                     st.warning("Cannot publish an empty post! Please type or generate a post first.")
@@ -1131,8 +1147,9 @@ with tab_history:
     if not stored_drafts:
         st.info("No saved drafts found matching your criteria.")
     else:
-        active_token = linkedin_token_input or env_linkedin_token
+        active_token = linkedin_token_input or session_linkedin_token
         for d in stored_drafts:
+
             d_id = d["id"]
             is_fav = d.get("is_favorite") == 1
             star_label = "⭐" if is_fav else "☆"

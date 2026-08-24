@@ -1,15 +1,19 @@
-"""
-Daily LinkedIn AI Ghostwriter - Desktop Web Application
-Built with Streamlit and the Official Google Gen AI SDK (`google-genai`).
-"""
+from __future__ import annotations
 
 import base64
 import json
 import os
+import sys
+from pathlib import Path
 import urllib.parse
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
+
+# Ensure root directory is always on sys.path for Streamlit Cloud & local deployments
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 # Load local environment variables
 load_dotenv()

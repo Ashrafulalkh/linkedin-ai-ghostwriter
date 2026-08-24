@@ -1,6 +1,4 @@
-"""
-AI Generation Engine powered by Google Gen AI SDK (`google-genai`) and OpenAI (`openai`).
-"""
+from __future__ import annotations
 
 import json
 import os
@@ -8,9 +6,20 @@ import re
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 import requests
-from google import genai
-from google.genai import types
-from google.genai.errors import APIError
+
+try:
+    from google import genai
+    from google.genai import types
+except Exception:
+    genai = None
+    types = None
+
+try:
+    from google.genai.errors import APIError
+except Exception:
+    class APIError(Exception):
+        pass
+
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -118,8 +127,12 @@ class LinkedInPostStructure(BaseModel):
     )
 
 
-def get_genai_client(api_key: Optional[str] = None) -> genai.Client:
+def get_genai_client(api_key: Optional[str] = None) -> Any:
     """Initialize and return a google-genai Client with support for AI Studio and Vertex AI."""
+    if genai is None:
+        raise ImportError(
+            "The 'google-genai' SDK is not installed. Please run: pip install google-genai"
+        )
     key = api_key or os.getenv("GEMINI_API_KEY")
     use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "false").lower() in ("true", "1", "yes")
     project = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT_ID")

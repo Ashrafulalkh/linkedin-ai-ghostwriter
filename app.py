@@ -82,17 +82,17 @@ if "code" in st.query_params:
             )
             if res["success"]:
                 st.session_state.linkedin_access_token = res["access_token"]
-                os.environ["LINKEDIN_ACCESS_TOKEN"] = res["access_token"]
-                try:
-                    save_access_token_to_env(res["access_token"])
-                except Exception:
-                    pass
+                # Auto fetch and store connected user profile in current session
+                profile = get_linkedin_user_profile(res["access_token"])
+                if profile.get("success"):
+                    st.session_state.linkedin_profile = profile
                 st.query_params.clear()
                 st.success("🎉 LinkedIn Account Connected Successfully!")
                 st.rerun()
             else:
                 st.error(f"LinkedIn Connection Failed: {res['error']}")
                 st.query_params.clear()
+
     else:
         st.error("LinkedIn Client ID or Client Secret is missing in Streamlit App Secrets / .env.")
         st.query_params.clear()

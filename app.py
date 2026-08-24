@@ -4,11 +4,13 @@ Built with Streamlit and the Official Google Gen AI SDK (`google-genai`).
 """
 
 import os
+import urllib.parse
 import streamlit as st
 from dotenv import load_dotenv
 
 # Load local environment variables
 load_dotenv()
+
 
 from modules.ai_generator import (
     SUPPORTED_PROVIDERS,

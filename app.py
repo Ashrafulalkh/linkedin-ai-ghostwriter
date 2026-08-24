@@ -11,6 +11,18 @@ from dotenv import load_dotenv
 # Load local environment variables
 load_dotenv()
 
+# Sync Streamlit Cloud secrets into os.environ for universal access
+try:
+    if hasattr(st, "secrets"):
+        for k, v in st.secrets.items():
+            if isinstance(v, (str, int, float, bool)):
+                os.environ[k] = str(v)
+except Exception:
+    pass
+
+DEFAULT_APP_URL = "https://linkedin-ai-ghostwriter-m86zum63j8lfura4uff6xs.streamlit.app"
+
+
 
 from modules.ai_generator import (
     SUPPORTED_PROVIDERS,
@@ -59,7 +71,7 @@ if "code" in st.query_params:
     auth_code = st.query_params["code"]
     client_id = os.getenv("LINKEDIN_CLIENT_ID", "")
     client_secret = os.getenv("LINKEDIN_CLIENT_SECRET", "")
-    redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", "http://localhost:8501").rstrip("/")
+    redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", DEFAULT_APP_URL).rstrip("/")
     if client_id and client_secret:
         with st.spinner("Authenticating with LinkedIn..."):
             res = exchange_authorization_code(
@@ -69,17 +81,22 @@ if "code" in st.query_params:
                 redirect_uri=redirect_uri_val,
             )
             if res["success"]:
-                save_access_token_to_env(res["access_token"])
+                st.session_state.linkedin_access_token = res["access_token"]
                 os.environ["LINKEDIN_ACCESS_TOKEN"] = res["access_token"]
+                try:
+                    save_access_token_to_env(res["access_token"])
+                except Exception:
+                    pass
                 st.query_params.clear()
                 st.success("🎉 LinkedIn Account Connected Successfully!")
                 st.rerun()
             else:
-                st.error(res["error"])
+                st.error(f"LinkedIn Connection Failed: {res['error']}")
                 st.query_params.clear()
     else:
-        st.warning("LinkedIn Client ID & Secret are required in environment / secrets to complete 1-click OAuth.")
+        st.error("LinkedIn Client ID or Client Secret is missing in Streamlit App Secrets / .env.")
         st.query_params.clear()
+
 
 
 # Custom CSS for rich, modern UI/UX styling
@@ -504,8 +521,8 @@ with st.sidebar:
     # LinkedIn Account Integration
     st.markdown("### 🔗 LinkedIn Direct Posting")
     client_id_val = os.getenv("LINKEDIN_CLIENT_ID", "")
-    env_linkedin_token = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
-    redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", "https://linkedin-ai-ghostwriter-m86zum63j8lfura4uff6xs.streamlit.app").rstrip("/")
+    env_linkedin_token = st.session_state.get("linkedin_access_token") or os.getenv("LINKEDIN_ACCESS_TOKEN", "")
+    redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", DEFAULT_APP_URL).rstrip("/")
     encoded_redirect = urllib.parse.quote(redirect_uri_val, safe="")
 
     # 1-Click OAuth Connect Button
@@ -517,7 +534,7 @@ with st.sidebar:
         )
         st.link_button("🔗 1-Click Connect LinkedIn", url=auth_url, use_container_width=True)
     else:
-        st.caption("ℹ️ To enable 1-Click LinkedIn OAuth, configure `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` in Streamlit App Secrets / .env.")
+        st.caption("ℹ️ To enable 1-Click LinkedIn OAuth, configure `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` in Streamlit App Secrets.")
 
     linkedin_token_input = st.text_input(
         "Or Paste Access Token Manually",
@@ -543,6 +560,7 @@ with st.sidebar:
                     st.success(f"Connected as **{profile['name']}**!")
                 else:
                     st.error(profile["error"])
+
     
     with st.expander("ℹ️ Redirect URI Configuration"):
         st.markdown(

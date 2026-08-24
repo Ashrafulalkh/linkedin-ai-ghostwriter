@@ -77,75 +77,45 @@ st.set_page_config(
 init_db()
 
 # ==========================================
-# 3-DAY BROWSER LOCALSTORAGE VAULT HANDLER
+# 3-DAY BROWSER LOCALSTORAGE VAULT COMPONENT
 # ==========================================
-# Ingest cached vault payload from client browser if passed via temporary sync query param
-if "_vault_sync" in st.query_params:
-    try:
-        raw_b64 = st.query_params["_vault_sync"]
-        decoded_str = urllib.parse.unquote(base64.b64decode(raw_b64).decode("utf-8"))
-        vault = json.loads(decoded_str)
-        if isinstance(vault, dict):
-            if vault.get("gemini_key"):
-                st.session_state.cached_gemini_key = vault["gemini_key"]
-            if vault.get("openai_key"):
-                st.session_state.cached_openai_key = vault["openai_key"]
-            if vault.get("groq_key"):
-                st.session_state.cached_groq_key = vault["groq_key"]
-            if vault.get("xai_key"):
-                st.session_state.cached_xai_key = vault["xai_key"]
-            if vault.get("provider"):
-                st.session_state.cached_provider = vault["provider"]
-            if vault.get("linkedin_token"):
-                st.session_state.linkedin_access_token = vault["linkedin_token"]
-                st.session_state.cached_linkedin_token = vault["linkedin_token"]
-                if "linkedin_profile" not in st.session_state or not st.session_state.linkedin_profile:
-                    p = get_linkedin_user_profile(vault["linkedin_token"])
-                    if p.get("success"):
-                        st.session_state.linkedin_profile = p
-            if vault.get("linkedin_urn"):
-                st.session_state.cached_linkedin_urn = vault["linkedin_urn"]
-            if vault.get("persona"):
-                st.session_state.cached_persona = vault["persona"]
-            if vault.get("tone"):
-                st.session_state.cached_tone = vault["tone"]
-    except Exception:
-        pass
-    st.query_params.clear()
-    st.rerun()
+VAULT_COMPONENT_DIR = Path(__file__).resolve().parent / "modules" / "vault_component"
+_browser_vault = components.declare_component("browser_vault", path=str(VAULT_COMPONENT_DIR))
 
-# 1-Time Browser Vault Probe on Initial Page Load
-if "vault_probed" not in st.session_state:
-    st.session_state.vault_probed = True
-    components.html(
-        """
-        <script>
-        try {
-            const vaultKey = "ghostwriter_local_vault_v1";
-            const raw = window.parent.localStorage.getItem(vaultKey);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                const now = Date.now();
-                if (parsed.expires_at && parsed.expires_at > now) {
-                    const p = new URLSearchParams(window.parent.location.search);
-                    if (!p.has("_vault_sync") && !window.parent.sessionStorage.getItem("_vault_probed_once")) {
-                        window.parent.sessionStorage.setItem("_vault_probed_once", "1");
-                        p.set("_vault_sync", btoa(encodeURIComponent(JSON.stringify(parsed.keys || {}))));
-                        window.parent.location.search = p.toString();
-                    }
-                } else {
-                    // Cache expired past 3 days -> purge
-                    window.parent.localStorage.removeItem(vaultKey);
-                }
-            }
-        } catch (e) {
-            console.error("Vault probe error:", e);
-        }
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+# Process clear request if triggered
+if st.session_state.get("_vault_clear_requested"):
+    _browser_vault(action="clear", key="vault_clear_act")
+    st.session_state._vault_clear_requested = False
+
+# Read stored credentials from client browser
+stored_vault = _browser_vault(action="read", key="vault_reader_act")
+
+if stored_vault and isinstance(stored_vault, dict) and not st.session_state.get("vault_initialized"):
+    if stored_vault.get("gemini_key"):
+        st.session_state.cached_gemini_key = stored_vault["gemini_key"]
+    if stored_vault.get("openai_key"):
+        st.session_state.cached_openai_key = stored_vault["openai_key"]
+    if stored_vault.get("groq_key"):
+        st.session_state.cached_groq_key = stored_vault["groq_key"]
+    if stored_vault.get("xai_key"):
+        st.session_state.cached_xai_key = stored_vault["xai_key"]
+    if stored_vault.get("provider"):
+        st.session_state.cached_provider = stored_vault["provider"]
+    if stored_vault.get("linkedin_token"):
+        st.session_state.linkedin_access_token = stored_vault["linkedin_token"]
+        st.session_state.cached_linkedin_token = stored_vault["linkedin_token"]
+        if "linkedin_profile" not in st.session_state or not st.session_state.linkedin_profile:
+            p = get_linkedin_user_profile(stored_vault["linkedin_token"])
+            if p.get("success"):
+                st.session_state.linkedin_profile = p
+    if stored_vault.get("linkedin_urn"):
+        st.session_state.cached_linkedin_urn = stored_vault["linkedin_urn"]
+    if stored_vault.get("persona"):
+        st.session_state.cached_persona = stored_vault["persona"]
+    if stored_vault.get("tone"):
+        st.session_state.cached_tone = stored_vault["tone"]
+    st.session_state.vault_initialized = True
+    st.rerun()
 
 # Handle incoming LinkedIn OAuth callback
 if "code" in st.query_params:
@@ -722,18 +692,8 @@ with st.sidebar:
         st.session_state.cached_linkedin_urn = ""
         st.session_state.linkedin_access_token = ""
         st.session_state.linkedin_profile = None
-        components.html(
-            """
-            <script>
-            try {
-                window.parent.localStorage.removeItem("ghostwriter_local_vault_v1");
-                window.parent.sessionStorage.removeItem("_vault_probed_once");
-            } catch(e) {}
-            </script>
-            """,
-            height=0,
-            width=0,
-        )
+        st.session_state._vault_clear_requested = True
+        st.session_state.vault_initialized = False
         st.success("Browser vault cleared!")
         st.rerun()
 
@@ -1397,23 +1357,7 @@ if st.session_state.get("remember_keys_in_browser", True):
     }
 
     if any(vault_payload.get(k) for k in ["gemini_key", "openai_key", "groq_key", "xai_key", "linkedin_token"]):
-        vault_json = json.dumps(vault_payload)
-        components.html(
-            f"""
-            <script>
-            try {{
-                const vaultKey = "ghostwriter_local_vault_v1";
-                const payload = {{
-                    timestamp: Date.now(),
-                    expires_at: Date.now() + (3 * 24 * 60 * 60 * 1000), // 3 Days
-                    keys: {vault_json}
-                }};
-                window.parent.localStorage.setItem(vaultKey, JSON.stringify(payload));
-            }} catch (e) {{}}
-            </script>
-            """,
-            height=0,
-            width=0,
-        )
+        _browser_vault(action="save", payload=vault_payload, key="vault_writer_act")
+
 
 

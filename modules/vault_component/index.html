@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+</head>
+<body style="margin:0; padding:0; display:none; background:transparent;">
+<script>
+// Streamlit Component Protocol
+function sendMessageToHost(type, data) {
+    const outData = Object.assign({
+        isStreamlitMessage: true,
+        type: type
+    }, data);
+    window.parent.postMessage(outData, "*");
+}
+
+function setComponentValue(value) {
+    sendMessageToHost("streamlit:setComponentValue", { value: value });
+}
+
+function setFrameHeight(height) {
+    sendMessageToHost("streamlit:setFrameHeight", { height: height || 0 });
+}
+
+const VAULT_STORAGE_KEY = "ghostwriter_local_vault_v2";
+
+function handleRender(event) {
+    if (!event.data || event.data.type !== "streamlit:render") return;
+    
+    const args = event.data.args || {};
+    const action = args.action || "read";
+    const payload = args.payload || null;
+    const now = Date.now();
+    
+    if (action === "save" && payload) {
+        try {
+            const wrapper = {
+                timestamp: now,
+                expires_at: now + (3 * 24 * 60 * 60 * 1000), // 3 Days (72 Hours)
+                data: payload
+            };
+            localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(wrapper));
+            setComponentValue(payload);
+        } catch (e) {
+            console.error("Vault save error:", e);
+        }
+    } else if (action === "clear") {
+        try {
+            localStorage.removeItem(VAULT_STORAGE_KEY);
+            setComponentValue(null);
+        } catch (e) {
+            console.error("Vault clear error:", e);
+        }
+    } else {
+        // Read action
+        try {
+            const raw = localStorage.getItem(VAULT_STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed.expires_at && parsed.expires_at > now) {
+                    setComponentValue(parsed.data);
+                } else {
+                    // Expired
+                    localStorage.removeItem(VAULT_STORAGE_KEY);
+                    setComponentValue(null);
+                }
+            } else {
+                setComponentValue(null);
+            }
+        } catch (e) {
+            console.error("Vault read error:", e);
+            setComponentValue(null);
+        }
+    }
+}
+
+window.addEventListener("message", handleRender);
+sendMessageToHost("streamlit:componentReady", { apiVersion: 1 });
+setFrameHeight(0);
+</script>
+</body>
+</html>

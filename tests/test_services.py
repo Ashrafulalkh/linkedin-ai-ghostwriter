@@ -135,6 +135,20 @@ class TestAIGeneratorStructure(unittest.TestCase):
             self.assertFalse(res["success"])
             self.assertIn("OpenAI API Key is missing", res["error"])
 
+    def test_grok_missing_key_error(self):
+        from modules.ai_generator import generate_linkedin_post
+        with patch.dict("os.environ", {"XAI_API_KEY": ""}, clear=True):
+            res = generate_linkedin_post(
+                topic_title="Test Topic",
+                topic_content="Test Content",
+                provider="xAI (Grok)",
+                api_key="",
+                model_name="grok-2-1212",
+            )
+            self.assertFalse(res["success"])
+            self.assertIn("xAI (Grok) API Key is missing", res["error"])
+
+
 
 class TestLinkedInAPI(unittest.TestCase):
     """Test LinkedIn API helpers."""

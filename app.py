@@ -14,11 +14,13 @@ from modules.ai_generator import (
     SUPPORTED_PROVIDERS,
     SUPPORTED_GEMINI_MODELS,
     SUPPORTED_OPENAI_MODELS,
+    SUPPORTED_GROK_MODELS,
     SUPPORTED_MODELS,
     TONE_PROFILES,
     generate_linkedin_post,
     regenerate_hooks,
 )
+
 from modules.linkedin_api import (
     exchange_authorization_code,
     generate_web_composer_url,
@@ -364,7 +366,7 @@ with st.sidebar:
         "Select AI Provider",
         options=SUPPORTED_PROVIDERS,
         horizontal=True,
-        help="Choose between Google Gemini or OpenAI (ChatGPT).",
+        help="Choose between Google Gemini, OpenAI (ChatGPT), or xAI (Grok).",
     )
 
     if provider_choice == "Google Gemini":
@@ -393,7 +395,7 @@ with st.sidebar:
         else:
             selected_model = selected_model_choice
 
-    else:
+    elif provider_choice == "OpenAI (ChatGPT)":
         env_openai_key = os.getenv("OPENAI_API_KEY", "")
         api_key_input = st.text_input(
             "OpenAI API Key",
@@ -418,6 +420,35 @@ with st.sidebar:
             selected_model = st.text_input("Custom Model Name", value="gpt-4o")
         else:
             selected_model = selected_model_choice
+
+    else:
+        # xAI (Grok)
+        env_grok_key = os.getenv("XAI_API_KEY", "")
+        api_key_input = st.text_input(
+            "xAI (Grok) API Key",
+            value=env_grok_key,
+            type="password",
+            help="Reads automatically from .env or paste your xAI API key.",
+        )
+        if api_key_input:
+            st.success("xAI Grok API Key configured", icon="✅")
+        else:
+            st.warning("xAI Grok API Key needed", icon="⚠️")
+            st.caption("[Get an xAI API Key](https://console.x.ai/)")
+
+        model_options = SUPPORTED_GROK_MODELS + ["Custom Model..."]
+        selected_model_choice = st.selectbox(
+            "xAI Grok Model",
+            options=model_options,
+            index=0,
+            help="grok-4.6, grok-4.5, grok-4.3, grok-4, and grok-3 provide state-of-the-art reasoning and code intelligence.",
+        )
+        if selected_model_choice == "Custom Model...":
+            selected_model = st.text_input("Custom Model Name", value="grok-4.6")
+        else:
+            selected_model = selected_model_choice
+
+
 
     st.divider()
 

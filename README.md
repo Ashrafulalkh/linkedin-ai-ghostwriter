@@ -1,17 +1,19 @@
 # ⚡ Daily LinkedIn AI Ghostwriter
 
-A production-ready, local desktop web application built with **Streamlit** and the official **Google Gen AI SDK (`google-genai`)** designed for Data Science and Software Engineering professionals.
+A production-ready, local desktop web application built with **Streamlit**, supporting both **Google Gemini (`google-genai`)** and **OpenAI ChatGPT (`openai`)**, designed for Data Science and Software Engineering professionals.
 
-It automatically pulls live tech and research news via RSS feeds, scrapes custom URLs, provides tailored engineering tone profiles, and uses Gemini 2.5/2.0 Flash to craft high-engagement LinkedIn posts with structured hooks, takeaways, and questions.
+It automatically pulls live tech and research news via RSS feeds, scrapes custom URLs, provides tailored engineering tone profiles, and crafts high-engagement LinkedIn posts with structured hooks, takeaways, and questions.
 
 ---
 
 ## 🌟 Key Features
 
-1. **Official Google Gen AI SDK (`google-genai`)**:
-   - Uses `from google import genai` with `gemini-2.5-flash` or `gemini-2.0-flash`.
-   - Structured JSON output parsing for deterministic post components.
-   - Dynamic prompt orchestration with engineering personas and tones.
+1. **Multi-AI Engine (Google Gemini, OpenAI ChatGPT & xAI Grok)**:
+   - **Google Gemini**: Official `google-genai` SDK with `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-flash-latest`, Vertex AI support, and automatic fallback.
+   - **OpenAI (ChatGPT)**: Full support for `gpt-4o`, `gpt-4o-mini`, `o3-mini`, `gpt-4-turbo`, and custom models via `openai` SDK.
+   - **xAI (Grok)**: Support for `grok-2-1212`, `grok-beta`, `grok-2-vision-1212`, `grok-vision-beta`, and custom models via OpenAI client compatibility.
+   - Structured Pydantic schema validation for deterministic post components across all models.
+
 
 2. **Live Topic Discovery (RSS Engine)**:
    - Real-time aggregation from Hacker News, ArXiv CS/AI & ML research papers, TechCrunch AI, Dev.to Python, and VentureBeat.

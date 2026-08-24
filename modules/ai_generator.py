@@ -39,6 +39,7 @@ TONE_PROFILES: Dict[str, Dict[str, str]] = {
 SUPPORTED_PROVIDERS = [
     "Google Gemini",
     "OpenAI (ChatGPT)",
+    "xAI (Grok)",
 ]
 
 SUPPORTED_GEMINI_MODELS = [
@@ -58,8 +59,21 @@ SUPPORTED_OPENAI_MODELS = [
     "gpt-3.5-turbo",
 ]
 
+SUPPORTED_GROK_MODELS = [
+    "grok-4.6",
+    "grok-4.5",
+    "grok-4.3",
+    "grok-4",
+    "grok-3",
+    "grok-3-mini",
+]
+
+
+
+
 # Default alias for backward compatibility
 SUPPORTED_MODELS = SUPPORTED_GEMINI_MODELS
+
 
 
 class LinkedInPostStructure(BaseModel):
@@ -130,6 +144,22 @@ def get_openai_client(api_key: Optional[str] = None) -> Any:
     if base_url:
         return OpenAI(api_key=key.strip(), base_url=base_url)
     return OpenAI(api_key=key.strip())
+
+
+def get_grok_client(api_key: Optional[str] = None) -> Any:
+    """Initialize and return an OpenAI Client configured for xAI (Grok)."""
+    key = api_key or os.getenv("XAI_API_KEY")
+    if not key or not key.strip():
+        raise ValueError(
+            "xAI (Grok) API Key is missing. Please enter it in the sidebar or set XAI_API_KEY in your .env file."
+        )
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError(
+            "The 'openai' Python package is not installed. Please run: pip install openai"
+        )
+    return OpenAI(api_key=key.strip(), base_url="https://api.x.ai/v1")
 
 
 def build_system_prompt(persona: str, tone_name: str) -> str:
@@ -219,6 +249,113 @@ Please return the response adhering strictly to the JSON schema with two distinc
         }
 
 
+def _generate_with_grok(
+    topic_title: str,
+    topic_content: str,
+    tone: str,
+    persona: str,
+    custom_notes: Optional[str],
+    target_length: str,
+    model_name: str,
+    api_key: Optional[str],
+    temperature: float,
+) -> Dict[str, Any]:
+    """Generate structured LinkedIn post using xAI (Grok) API."""
+    try:
+        client = get_grok_client(api_key)
+        system_prompt = build_system_prompt(persona, tone)
+
+        user_prompt = f"""Craft a high-signal LinkedIn post based on the following tech topic / research / article.
+
+Topic Title: {topic_title}
+
+Context / Article Content:
+{topic_content if topic_content else 'Focus on the topic title and core engineering implications.'}
+
+Target Length Preference: {target_length}
+Additional Custom Instructions / Angles from the User: {custom_notes or 'None - focus on top engineering takeaways.'}
+
+Please return the response adhering strictly to this JSON structure:
+{{
+    "hook_option_1": "First high-impact, scroll-stopping hook option",
+    "hook_option_2": "Second high-impact, scroll-stopping hook option",
+    "selected_hook": "The strongest recommended hook to open the post",
+    "body": "2-3 short, scannable paragraphs or bullet points with ample white space",
+    "technical_takeaway": "1-2 sentences of actionable, high-value engineering advice",
+    "discussion_question": "An open-ended question designed to spark thoughtful discussions",
+    "hashtags": ["#Tag1", "#Tag2", "#Tag3"],
+    "full_assembled_post": "The complete, publication-ready LinkedIn post combining hook, body, takeaway, question, and hashtags."
+}}
+"""
+        parsed_data = None
+        try:
+            completion = client.beta.chat.completions.parse(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=LinkedInPostStructure,
+                temperature=temperature,
+            )
+            message = completion.choices[0].message
+            if message.parsed:
+                parsed_data = message.parsed.model_dump()
+            elif message.content:
+                parsed_data = json.loads(message.content)
+        except Exception:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=temperature,
+            )
+            raw = completion.choices[0].message.content or "{}"
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
+            parsed_data = json.loads(cleaned)
+
+        return {
+            "success": True,
+            "data": parsed_data,
+            "error": None,
+            "model_used": model_name,
+            "provider_used": "xAI (Grok)",
+        }
+    except Exception as e:
+        err_str = str(e)
+        if "permission-denied" in err_str or "credits" in err_str:
+            friendly_err = (
+                f"xAI Grok Billing Error: Your xAI account/team does not have active credits. "
+                f"Please add credits on https://console.x.ai/ (under Billing/Credits) to enable API requests."
+            )
+        elif "Model not found" in err_str:
+            friendly_err = (
+                f"xAI Grok Error: Model '{model_name}' was not found or is not enabled on your xAI account. "
+                f"Try selecting 'grok-4.6', 'grok-4.5', or 'grok-beta' from the dropdown, or check https://console.x.ai/."
+            )
+        else:
+            friendly_err = f"xAI Grok Error ({model_name}): {err_str}"
+
+        return {
+            "success": False,
+            "data": None,
+            "error": friendly_err,
+            "model_used": model_name,
+            "provider_used": "xAI (Grok)",
+        }
+
+
+
 def _generate_with_gemini(
     topic_title: str,
     topic_content: str,
@@ -286,7 +423,7 @@ Please return the response adhering strictly to the JSON schema with two distinc
                     f"Google Gemini API Error ({candidate_model}): {msg}. "
                     "Google restricts Gemini API calls from certain geographical IP locations. "
                     "Tip: Connect via a VPN set to a supported region (such as USA, UK, Germany, or Singapore), "
-                    "set an HTTPS_PROXY, or switch to OpenAI (ChatGPT) in the sidebar!"
+                    "set an HTTPS_PROXY, or switch to OpenAI (ChatGPT) or xAI (Grok) in the sidebar!"
                 )
             else:
                 last_error = f"Google Gemini API Error ({candidate_model}): {msg}"
@@ -296,7 +433,7 @@ Please return the response adhering strictly to the JSON schema with two distinc
             if "User location is not supported" in msg:
                 last_error = (
                     f"Generation Error ({candidate_model}): {msg}. "
-                    "Tip: Connect via a VPN or switch to OpenAI (ChatGPT) in the sidebar."
+                    "Tip: Connect via a VPN or switch to OpenAI (ChatGPT) or xAI (Grok) in the sidebar."
                 )
             else:
                 last_error = f"Generation Error ({candidate_model}): {msg}"
@@ -323,10 +460,25 @@ def generate_linkedin_post(
     temperature: float = 0.7,
     provider: str = "Google Gemini",
 ) -> Dict[str, Any]:
-    """Generate a structured LinkedIn post using either Google Gemini or OpenAI ChatGPT."""
-    is_openai = provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))
+    """Generate a structured LinkedIn post using Google Gemini, OpenAI ChatGPT, or xAI Grok."""
+    is_grok = provider == "xAI (Grok)" or model_name.startswith("grok")
+    is_openai = (provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))) and not is_grok
     
-    if is_openai:
+    if is_grok:
+        eff_model = model_name if model_name.startswith("grok") else "grok-2-latest"
+        return _generate_with_grok(
+            topic_title=topic_title,
+            topic_content=topic_content,
+            tone=tone,
+            persona=persona,
+            custom_notes=custom_notes,
+            target_length=target_length,
+            model_name=eff_model,
+            api_key=api_key,
+            temperature=temperature,
+        )
+    elif is_openai:
+        eff_model = model_name if not model_name.startswith("gemini") else "gpt-4o-mini"
         return _generate_with_openai(
             topic_title=topic_title,
             topic_content=topic_content,
@@ -334,7 +486,7 @@ def generate_linkedin_post(
             persona=persona,
             custom_notes=custom_notes,
             target_length=target_length,
-            model_name=model_name if not model_name.startswith("gemini") else "gpt-4o-mini",
+            model_name=eff_model,
             api_key=api_key,
             temperature=temperature,
         )
@@ -366,7 +518,37 @@ def regenerate_hooks(
 Generate 3 brand-new, ultra-compelling LinkedIn hook opening lines (1-2 sentences each) in a '{tone}' tone.
 Return ONLY a raw JSON array of 3 strings, e.g. ["Hook 1...", "Hook 2...", "Hook 3..."]."""
 
-    is_openai = provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))
+    is_grok = provider == "xAI (Grok)" or model_name.startswith("grok")
+    is_openai = (provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))) and not is_grok
+
+    if is_grok:
+        try:
+            client = get_grok_client(api_key)
+            eff_model = model_name if model_name.startswith("grok") else "grok-2-latest"
+            response = client.chat.completions.create(
+                model=eff_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.8,
+            )
+            raw = response.choices[0].message.content or "[]"
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                return parsed
+            if isinstance(parsed, dict):
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        return v
+            return []
+        except Exception:
+            return []
 
     if is_openai:
         try:
@@ -415,4 +597,5 @@ Return ONLY a raw JSON array of 3 strings, e.g. ["Hook 1...", "Hook 2...", "Hook
         return hooks if isinstance(hooks, list) else []
     except Exception:
         return []
+
 

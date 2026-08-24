@@ -4,8 +4,10 @@ AI Generation Engine powered by Google Gen AI SDK (`google-genai`) and OpenAI (`
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
+import requests
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -39,6 +41,7 @@ TONE_PROFILES: Dict[str, Dict[str, str]] = {
 SUPPORTED_PROVIDERS = [
     "Google Gemini",
     "OpenAI (ChatGPT)",
+    "Groq",
     "xAI (Grok)",
 ]
 
@@ -57,6 +60,17 @@ SUPPORTED_OPENAI_MODELS = [
     "o3-mini",
     "gpt-4-turbo",
     "gpt-3.5-turbo",
+]
+
+SUPPORTED_GROQ_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
+    "groq/compound",
+    "groq/compound-mini",
+    "allam-2-7b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
 ]
 
 SUPPORTED_GROK_MODELS = [
@@ -144,6 +158,64 @@ def get_openai_client(api_key: Optional[str] = None) -> Any:
     if base_url:
         return OpenAI(api_key=key.strip(), base_url=base_url)
     return OpenAI(api_key=key.strip())
+
+
+def get_groq_client(api_key: Optional[str] = None) -> Any:
+    """Initialize and return an OpenAI Client configured for Groq."""
+    key = api_key or os.getenv("GROQ_API_KEY")
+    if not key or not key.strip():
+        raise ValueError(
+            "Groq API Key is missing. Please enter it in the sidebar or set GROQ_API_KEY in your .env file."
+        )
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError(
+            "The 'openai' Python package is not installed. Please run: pip install openai"
+        )
+    return OpenAI(api_key=key.strip(), base_url="https://api.groq.com/openai/v1")
+
+
+def get_groq_available_models(api_key: Optional[str] = None) -> List[str]:
+    """Fetch active chat models from Groq for the given API key, with fallback to default list."""
+    key = api_key or os.getenv("GROQ_API_KEY")
+    if not key or not key.strip():
+        return SUPPORTED_GROQ_MODELS
+
+    try:
+        import requests
+        excluded = ("whisper", "prompt-guard", "safeguard", "orpheus")
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {key.strip()}"},
+            timeout=3,
+        )
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            active_models = [
+                m["id"] for m in data
+                if m.get("active", True) and not any(ex in m["id"].lower() for ex in excluded)
+            ]
+            if active_models:
+                preferred_order = [
+                    "openai/gpt-oss-120b",
+                    "openai/gpt-oss-20b",
+                    "qwen/qwen3.6-27b",
+                    "groq/compound",
+                    "groq/compound-mini",
+                    "allam-2-7b",
+                    "llama-3.3-70b-versatile",
+                    "llama-3.1-8b-instant",
+                ]
+                sorted_models = [m for m in preferred_order if m in active_models]
+                for m in active_models:
+                    if m not in sorted_models:
+                        sorted_models.append(m)
+                return sorted_models
+    except Exception:
+        pass
+
+    return SUPPORTED_GROQ_MODELS
 
 
 def get_grok_client(api_key: Optional[str] = None) -> Any:
@@ -246,6 +318,133 @@ Please return the response adhering strictly to the JSON schema with two distinc
             "error": f"OpenAI Error ({model_name}): {str(e)}",
             "model_used": model_name,
             "provider_used": "OpenAI (ChatGPT)",
+        }
+
+
+def _generate_with_groq(
+    topic_title: str,
+    topic_content: str,
+    tone: str,
+    persona: str,
+    custom_notes: Optional[str],
+    target_length: str,
+    model_name: str,
+    api_key: Optional[str],
+    temperature: float,
+) -> Dict[str, Any]:
+    """Generate structured LinkedIn post using Groq API."""
+    try:
+        client = get_groq_client(api_key)
+        system_prompt = build_system_prompt(persona, tone)
+
+        user_prompt = f"""Craft a high-signal LinkedIn post based on the following tech topic / research / article.
+
+Topic Title: {topic_title}
+
+Context / Article Content:
+{topic_content if topic_content else 'Focus on the topic title and core engineering implications.'}
+
+Target Length Preference: {target_length}
+Additional Custom Instructions / Angles from the User: {custom_notes or 'None - focus on top engineering takeaways.'}
+
+Please return the response adhering strictly to this JSON structure:
+{{
+    "hook_option_1": "First high-impact, scroll-stopping hook option",
+    "hook_option_2": "Second high-impact, scroll-stopping hook option",
+    "selected_hook": "The strongest recommended hook to open the post",
+    "body": "2-3 short, scannable paragraphs or bullet points with ample white space",
+    "technical_takeaway": "1-2 sentences of actionable, high-value engineering advice",
+    "discussion_question": "An open-ended question designed to spark thoughtful discussions",
+    "hashtags": ["#Tag1", "#Tag2", "#Tag3"],
+    "full_assembled_post": "The complete, publication-ready LinkedIn post combining hook, body, takeaway, question, and hashtags."
+}}
+"""
+        parsed_data = None
+        # Strategy 1: Try structured outputs parsing
+        try:
+            completion = client.beta.chat.completions.parse(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=LinkedInPostStructure,
+                temperature=temperature,
+            )
+            message = completion.choices[0].message
+            if message.parsed:
+                parsed_data = message.parsed.model_dump()
+            elif message.content:
+                parsed_data = json.loads(message.content)
+        except Exception:
+            pass
+
+        # Strategy 2: Try json_object format
+        if not parsed_data:
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=temperature,
+                )
+                raw = completion.choices[0].message.content or "{}"
+                cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+                if "```" in cleaned:
+                    m_block = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+                    if m_block:
+                        cleaned = m_block.group(1)
+                parsed_data = json.loads(cleaned)
+            except Exception:
+                pass
+
+        # Strategy 3: Standard text completion with regex JSON extraction (works for reasoning models like qwen/deepseek)
+        if not parsed_data:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+            )
+            raw = completion.choices[0].message.content or "{}"
+            cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            if "```" in cleaned:
+                m_block = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+                if m_block:
+                    cleaned = m_block.group(1)
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if match:
+                parsed_data = json.loads(match.group(0))
+            else:
+                parsed_data = json.loads(cleaned)
+
+        return {
+            "success": True,
+            "data": parsed_data,
+            "error": None,
+            "model_used": model_name,
+            "provider_used": "Groq",
+        }
+    except Exception as e:
+        err_str = str(e)
+        if "rate_limit_exceeded" in err_str.lower() or "429" in err_str:
+            friendly_err = f"Groq Rate Limit Reached: {err_str}. Please wait a moment or try another model."
+        elif "invalid_api_key" in err_str.lower() or "401" in err_str:
+            friendly_err = "Groq Authentication Error: Invalid API key. Please check your Groq API key in the sidebar."
+        else:
+            friendly_err = f"Groq Error ({model_name}): {err_str}"
+
+        return {
+            "success": False,
+            "data": None,
+            "error": friendly_err,
+            "model_used": model_name,
+            "provider_used": "Groq",
         }
 
 
@@ -460,11 +659,25 @@ def generate_linkedin_post(
     temperature: float = 0.7,
     provider: str = "Google Gemini",
 ) -> Dict[str, Any]:
-    """Generate a structured LinkedIn post using Google Gemini, OpenAI ChatGPT, or xAI Grok."""
-    is_grok = provider == "xAI (Grok)" or model_name.startswith("grok")
-    is_openai = (provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))) and not is_grok
+    """Generate a structured LinkedIn post using Google Gemini, OpenAI ChatGPT, Groq, or xAI Grok."""
+    is_groq = provider == "Groq" or model_name.startswith(("llama", "mixtral", "gemma2", "deepseek"))
+    is_grok = (provider == "xAI (Grok)" or model_name.startswith("grok")) and not is_groq
+    is_openai = (provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))) and not is_grok and not is_groq
     
-    if is_grok:
+    if is_groq:
+        eff_model = model_name if not model_name.startswith(("gemini", "gpt", "grok")) else "llama-3.3-70b-versatile"
+        return _generate_with_groq(
+            topic_title=topic_title,
+            topic_content=topic_content,
+            tone=tone,
+            persona=persona,
+            custom_notes=custom_notes,
+            target_length=target_length,
+            model_name=eff_model,
+            api_key=api_key,
+            temperature=temperature,
+        )
+    elif is_grok:
         eff_model = model_name if model_name.startswith("grok") else "grok-2-latest"
         return _generate_with_grok(
             topic_title=topic_title,
@@ -518,8 +731,38 @@ def regenerate_hooks(
 Generate 3 brand-new, ultra-compelling LinkedIn hook opening lines (1-2 sentences each) in a '{tone}' tone.
 Return ONLY a raw JSON array of 3 strings, e.g. ["Hook 1...", "Hook 2...", "Hook 3..."]."""
 
-    is_grok = provider == "xAI (Grok)" or model_name.startswith("grok")
-    is_openai = (provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))) and not is_grok
+    is_groq = provider == "Groq" or model_name.startswith(("llama", "mixtral", "gemma2", "deepseek"))
+    is_grok = (provider == "xAI (Grok)" or model_name.startswith("grok")) and not is_groq
+    is_openai = (provider == "OpenAI (ChatGPT)" or model_name.startswith(("gpt-", "o1-", "o3-", "chatgpt"))) and not is_grok and not is_groq
+
+    if is_groq:
+        try:
+            client = get_groq_client(api_key)
+            eff_model = model_name if not model_name.startswith(("gemini", "gpt", "grok")) else "llama-3.3-70b-versatile"
+            response = client.chat.completions.create(
+                model=eff_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.8,
+            )
+            raw = response.choices[0].message.content or "[]"
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                return parsed
+            if isinstance(parsed, dict):
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        return v
+            return []
+        except Exception:
+            return []
 
     if is_grok:
         try:
@@ -597,5 +840,23 @@ Return ONLY a raw JSON array of 3 strings, e.g. ["Hook 1...", "Hook 2...", "Hook
         return hooks if isinstance(hooks, list) else []
     except Exception:
         return []
+
+
+__all__ = [
+    "SUPPORTED_PROVIDERS",
+    "SUPPORTED_GEMINI_MODELS",
+    "SUPPORTED_OPENAI_MODELS",
+    "SUPPORTED_GROQ_MODELS",
+    "SUPPORTED_GROK_MODELS",
+    "SUPPORTED_MODELS",
+    "TONE_PROFILES",
+    "get_groq_available_models",
+    "get_groq_client",
+    "get_genai_client",
+    "get_openai_client",
+    "get_grok_client",
+    "generate_linkedin_post",
+    "regenerate_hooks",
+]
 
 

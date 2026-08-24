@@ -29,10 +29,12 @@ from modules.ai_generator import (
     SUPPORTED_PROVIDERS,
     SUPPORTED_GEMINI_MODELS,
     SUPPORTED_OPENAI_MODELS,
+    SUPPORTED_GROQ_MODELS,
     SUPPORTED_GROK_MODELS,
     SUPPORTED_MODELS,
     TONE_PROFILES,
     generate_linkedin_post,
+    get_groq_available_models,
     regenerate_hooks,
 )
 
@@ -392,7 +394,7 @@ with st.sidebar:
         "Select AI Provider",
         options=SUPPORTED_PROVIDERS,
         horizontal=True,
-        help="Choose between Google Gemini, OpenAI (ChatGPT), or xAI (Grok).",
+        help="Choose between Google Gemini, OpenAI (ChatGPT), Groq (Ultra-Fast), or xAI (Grok).",
     )
 
     if provider_choice == "Google Gemini":
@@ -444,6 +446,34 @@ with st.sidebar:
         )
         if selected_model_choice == "Custom Model...":
             selected_model = st.text_input("Custom Model Name", value="gpt-4o")
+        else:
+            selected_model = selected_model_choice
+
+    elif provider_choice == "Groq":
+        env_groq_key = os.getenv("GROQ_API_KEY", "")
+        api_key_input = st.text_input(
+            "Groq API Key",
+            value=env_groq_key,
+            type="password",
+            help="Reads automatically from .env or paste your Groq API key (starts with gsk_).",
+        )
+        if api_key_input:
+            st.success("Groq API Key configured", icon="⚡")
+        else:
+            st.warning("Groq API Key needed", icon="⚠️")
+            st.caption("[Get a free Groq API Key](https://console.groq.com/keys)")
+
+        available_groq_models = get_groq_available_models(api_key_input)
+        model_options = available_groq_models + ["Custom Model..."]
+        selected_model_choice = st.selectbox(
+            "Groq Model",
+            options=model_options,
+            index=0,
+            help="High-speed open models hosted on Groq LPU inference engine.",
+        )
+        if selected_model_choice == "Custom Model...":
+            default_val = available_groq_models[0] if available_groq_models else "openai/gpt-oss-120b"
+            selected_model = st.text_input("Custom Model Name", value=default_val)
         else:
             selected_model = selected_model_choice
 

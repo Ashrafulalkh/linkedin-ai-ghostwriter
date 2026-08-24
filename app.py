@@ -55,24 +55,30 @@ init_db()
 # Handle incoming LinkedIn OAuth callback
 if "code" in st.query_params:
     auth_code = st.query_params["code"]
-    client_id = os.getenv("LINKEDIN_CLIENT_ID", "7894mkw8pmq8i8")
-    client_secret = os.getenv("LINKEDIN_CLIENT_SECRET", "WPL_AP1.5fcr1ernbXV3yVeM.oRPmbw==")
-    with st.spinner("Authenticating with LinkedIn..."):
-        res = exchange_authorization_code(
-            code=auth_code,
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri="http://localhost:8501",
-        )
-        if res["success"]:
-            save_access_token_to_env(res["access_token"])
-            os.environ["LINKEDIN_ACCESS_TOKEN"] = res["access_token"]
-            st.query_params.clear()
-            st.success("🎉 LinkedIn Account Connected Successfully!")
-            st.rerun()
-        else:
-            st.error(res["error"])
-            st.query_params.clear()
+    client_id = os.getenv("LINKEDIN_CLIENT_ID", "")
+    client_secret = os.getenv("LINKEDIN_CLIENT_SECRET", "")
+    redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", "http://localhost:8501").rstrip("/")
+    if client_id and client_secret:
+        with st.spinner("Authenticating with LinkedIn..."):
+            res = exchange_authorization_code(
+                code=auth_code,
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri_val,
+            )
+            if res["success"]:
+                save_access_token_to_env(res["access_token"])
+                os.environ["LINKEDIN_ACCESS_TOKEN"] = res["access_token"]
+                st.query_params.clear()
+                st.success("🎉 LinkedIn Account Connected Successfully!")
+                st.rerun()
+            else:
+                st.error(res["error"])
+                st.query_params.clear()
+    else:
+        st.warning("LinkedIn Client ID & Secret are required in environment / secrets to complete 1-click OAuth.")
+        st.query_params.clear()
+
 
 # Custom CSS for rich, modern UI/UX styling
 st.markdown(
@@ -495,22 +501,27 @@ with st.sidebar:
 
     # LinkedIn Account Integration
     st.markdown("### 🔗 LinkedIn Direct Posting")
-    client_id_val = os.getenv("LINKEDIN_CLIENT_ID", "7894mkw8pmq8i8")
+    client_id_val = os.getenv("LINKEDIN_CLIENT_ID", "")
     env_linkedin_token = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
+    redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", "https://linkedin-ai-ghostwriter-m86zum63j8lfura4uff6xs.streamlit.app").rstrip("/")
+    encoded_redirect = urllib.parse.quote(redirect_uri_val, safe="")
 
     # 1-Click OAuth Connect Button
-    auth_url = (
-        f"https://www.linkedin.com/oauth/v2/authorization?"
-        f"response_type=code&client_id={client_id_val}&redirect_uri=http%3A%2F%2Flocalhost%3A8501&"
-        f"scope=w_member_social%20openid%20profile%20email&state=ghostwriter"
-    )
-    st.link_button("🔗 1-Click Connect LinkedIn", url=auth_url, use_container_width=True)
+    if client_id_val:
+        auth_url = (
+            f"https://www.linkedin.com/oauth/v2/authorization?"
+            f"response_type=code&client_id={client_id_val}&redirect_uri={encoded_redirect}&"
+            f"scope=w_member_social%20openid%20profile%20email&state=ghostwriter"
+        )
+        st.link_button("🔗 1-Click Connect LinkedIn", url=auth_url, use_container_width=True)
+    else:
+        st.caption("ℹ️ To enable 1-Click LinkedIn OAuth, configure `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` in Streamlit App Secrets / .env.")
 
     linkedin_token_input = st.text_input(
         "Or Paste Access Token Manually",
         value=env_linkedin_token,
         type="password",
-        help="Access token loaded from .env or manual input.",
+        help="Access token loaded from environment or manual input.",
     )
     
     env_linkedin_urn = os.getenv("LINKEDIN_AUTHOR_URN", "")
@@ -533,12 +544,15 @@ with st.sidebar:
     
     with st.expander("ℹ️ Redirect URI Configuration"):
         st.markdown(
-            """
-            In your **LinkedIn Developer App** -> **Auth** tab:
-            Under **"Authorized redirect URLs for your app"**, ensure:
-            `http://localhost:8501` is listed.
+            f"""
+            In your **[LinkedIn Developer Portal](https://developer.linkedin.com/)** -> Your App -> **Auth** tab:
+            
+            Under **"Authorized redirect URLs for your app"**, make sure you add:
+            - `{redirect_uri_val}`
+            - `http://localhost:8501` (for local development)
             """
         )
+
 
 
 

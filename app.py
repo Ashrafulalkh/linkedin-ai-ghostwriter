@@ -3,9 +3,12 @@ Daily LinkedIn AI Ghostwriter - Desktop Web Application
 Built with Streamlit and the Official Google Gen AI SDK (`google-genai`).
 """
 
+import base64
+import json
 import os
 import urllib.parse
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 # Load local environment variables
@@ -69,6 +72,77 @@ st.set_page_config(
 # Initialize SQLite database
 init_db()
 
+# ==========================================
+# 3-DAY BROWSER LOCALSTORAGE VAULT HANDLER
+# ==========================================
+# Ingest cached vault payload from client browser if passed via temporary sync query param
+if "_vault_sync" in st.query_params:
+    try:
+        raw_b64 = st.query_params["_vault_sync"]
+        decoded_str = urllib.parse.unquote(base64.b64decode(raw_b64).decode("utf-8"))
+        vault = json.loads(decoded_str)
+        if isinstance(vault, dict):
+            if vault.get("gemini_key"):
+                st.session_state.cached_gemini_key = vault["gemini_key"]
+            if vault.get("openai_key"):
+                st.session_state.cached_openai_key = vault["openai_key"]
+            if vault.get("groq_key"):
+                st.session_state.cached_groq_key = vault["groq_key"]
+            if vault.get("xai_key"):
+                st.session_state.cached_xai_key = vault["xai_key"]
+            if vault.get("provider"):
+                st.session_state.cached_provider = vault["provider"]
+            if vault.get("linkedin_token"):
+                st.session_state.linkedin_access_token = vault["linkedin_token"]
+                st.session_state.cached_linkedin_token = vault["linkedin_token"]
+                if "linkedin_profile" not in st.session_state or not st.session_state.linkedin_profile:
+                    p = get_linkedin_user_profile(vault["linkedin_token"])
+                    if p.get("success"):
+                        st.session_state.linkedin_profile = p
+            if vault.get("linkedin_urn"):
+                st.session_state.cached_linkedin_urn = vault["linkedin_urn"]
+            if vault.get("persona"):
+                st.session_state.cached_persona = vault["persona"]
+            if vault.get("tone"):
+                st.session_state.cached_tone = vault["tone"]
+    except Exception:
+        pass
+    st.query_params.clear()
+    st.rerun()
+
+# 1-Time Browser Vault Probe on Initial Page Load
+if "vault_probed" not in st.session_state:
+    st.session_state.vault_probed = True
+    components.html(
+        """
+        <script>
+        try {
+            const vaultKey = "ghostwriter_local_vault_v1";
+            const raw = window.parent.localStorage.getItem(vaultKey);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                const now = Date.now();
+                if (parsed.expires_at && parsed.expires_at > now) {
+                    const p = new URLSearchParams(window.parent.location.search);
+                    if (!p.has("_vault_sync") && !window.parent.sessionStorage.getItem("_vault_probed_once")) {
+                        window.parent.sessionStorage.setItem("_vault_probed_once", "1");
+                        p.set("_vault_sync", btoa(encodeURIComponent(JSON.stringify(parsed.keys || {}))));
+                        window.parent.location.search = p.toString();
+                    }
+                } else {
+                    // Cache expired past 3 days -> purge
+                    window.parent.localStorage.removeItem(vaultKey);
+                }
+            }
+        } catch (e) {
+            console.error("Vault probe error:", e);
+        }
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
 # Handle incoming LinkedIn OAuth callback
 if "code" in st.query_params:
     auth_code = st.query_params["code"]
@@ -85,6 +159,7 @@ if "code" in st.query_params:
             )
             if res["success"]:
                 st.session_state.linkedin_access_token = res["access_token"]
+                st.session_state.cached_linkedin_token = res["access_token"]
                 # Auto fetch and store connected user profile in current session
                 profile = get_linkedin_user_profile(res["access_token"])
                 if profile.get("success"):
@@ -390,22 +465,28 @@ def set_editor_content(text: str):
 with st.sidebar:
     st.markdown("### ⚡ AI Provider & Model")
     
+    default_provider_index = 0
+    if "cached_provider" in st.session_state and st.session_state.cached_provider in SUPPORTED_PROVIDERS:
+        default_provider_index = SUPPORTED_PROVIDERS.index(st.session_state.cached_provider)
+
     provider_choice = st.radio(
         "Select AI Provider",
         options=SUPPORTED_PROVIDERS,
+        index=default_provider_index,
         horizontal=True,
         help="Choose between Google Gemini, OpenAI (ChatGPT), Groq (Ultra-Fast), or xAI (Grok).",
     )
 
     if provider_choice == "Google Gemini":
-        env_gemini_key = os.getenv("GEMINI_API_KEY", "")
+        env_gemini_key = st.session_state.get("cached_gemini_key") or os.getenv("GEMINI_API_KEY", "")
         api_key_input = st.text_input(
             "Gemini API Key",
             value=env_gemini_key,
             type="password",
-            help="Reads automatically from .env or paste your Google AI Studio API key.",
+            help="Reads automatically from 3-day browser cache / .env or paste your key.",
         )
         if api_key_input:
+            st.session_state.cached_gemini_key = api_key_input
             st.success("Gemini API Key configured", icon="✅")
         else:
             st.warning("Gemini API Key needed", icon="⚠️")
@@ -424,14 +505,15 @@ with st.sidebar:
             selected_model = selected_model_choice
 
     elif provider_choice == "OpenAI (ChatGPT)":
-        env_openai_key = os.getenv("OPENAI_API_KEY", "")
+        env_openai_key = st.session_state.get("cached_openai_key") or os.getenv("OPENAI_API_KEY", "")
         api_key_input = st.text_input(
             "OpenAI API Key",
             value=env_openai_key,
             type="password",
-            help="Reads automatically from .env or paste your OpenAI API key.",
+            help="Reads automatically from 3-day browser cache / .env or paste your key.",
         )
         if api_key_input:
+            st.session_state.cached_openai_key = api_key_input
             st.success("OpenAI API Key configured", icon="✅")
         else:
             st.warning("OpenAI API Key needed", icon="⚠️")
@@ -450,14 +532,15 @@ with st.sidebar:
             selected_model = selected_model_choice
 
     elif provider_choice == "Groq":
-        env_groq_key = os.getenv("GROQ_API_KEY", "")
+        env_groq_key = st.session_state.get("cached_groq_key") or os.getenv("GROQ_API_KEY", "")
         api_key_input = st.text_input(
             "Groq API Key",
             value=env_groq_key,
             type="password",
-            help="Reads automatically from .env or paste your Groq API key (starts with gsk_).",
+            help="Reads automatically from 3-day browser cache / .env or paste your Groq API key (starts with gsk_).",
         )
         if api_key_input:
+            st.session_state.cached_groq_key = api_key_input
             st.success("Groq API Key configured", icon="⚡")
         else:
             st.warning("Groq API Key needed", icon="⚠️")
@@ -479,14 +562,15 @@ with st.sidebar:
 
     else:
         # xAI (Grok)
-        env_grok_key = os.getenv("XAI_API_KEY", "")
+        env_grok_key = st.session_state.get("cached_xai_key") or os.getenv("XAI_API_KEY", "")
         api_key_input = st.text_input(
             "xAI (Grok) API Key",
             value=env_grok_key,
             type="password",
-            help="Reads automatically from .env or paste your xAI API key.",
+            help="Reads automatically from 3-day browser cache / .env or paste your xAI API key.",
         )
         if api_key_input:
+            st.session_state.cached_xai_key = api_key_input
             st.success("xAI Grok API Key configured", icon="✅")
         else:
             st.warning("xAI Grok API Key needed", icon="⚠️")
@@ -509,17 +593,20 @@ with st.sidebar:
     st.divider()
 
     
+    cached_tone = st.session_state.get("cached_tone")
+    default_tone_index = list(TONE_PROFILES.keys()).index(cached_tone) if cached_tone in TONE_PROFILES else 0
     selected_tone = st.selectbox(
         "Ghostwriter Tone",
         options=list(TONE_PROFILES.keys()),
-        index=0,
+        index=default_tone_index,
         help="Select the perspective and voice for the LinkedIn post.",
     )
     st.caption(f"_{TONE_PROFILES[selected_tone]['description']}_")
     
+    default_persona = st.session_state.get("cached_persona") or "Principal Engineer / AI & Data Science Lead"
     user_persona = st.text_input(
         "Your Professional Persona",
-        value="Principal Engineer / AI & Data Science Lead",
+        value=default_persona,
         help="Tailors technical vocabulary, context, and seniority.",
     )
 
@@ -552,16 +639,23 @@ with st.sidebar:
     # LinkedIn Account Integration
     st.markdown("### 🔗 LinkedIn Direct Posting")
     client_id_val = os.getenv("LINKEDIN_CLIENT_ID", "")
-    session_linkedin_token = st.session_state.get("linkedin_access_token", "")
+    session_linkedin_token = st.session_state.get("linkedin_access_token") or st.session_state.get("cached_linkedin_token", "")
     session_profile = st.session_state.get("linkedin_profile")
     redirect_uri_val = os.getenv("LINKEDIN_REDIRECT_URI", DEFAULT_APP_URL).rstrip("/")
     encoded_redirect = urllib.parse.quote(redirect_uri_val, safe="")
 
     if session_linkedin_token:
+        if not session_profile:
+            profile = get_linkedin_user_profile(session_linkedin_token)
+            if profile.get("success"):
+                st.session_state.linkedin_profile = profile
+                session_profile = profile
+
         profile_name = session_profile.get("name", "Connected User") if session_profile else "LinkedIn User"
         st.success(f"✅ Connected as **{profile_name}**", icon="👤")
         if st.button("🚪 Disconnect LinkedIn", use_container_width=True):
             st.session_state.linkedin_access_token = ""
+            st.session_state.cached_linkedin_token = ""
             st.session_state.linkedin_profile = None
             st.rerun()
         linkedin_token_input = session_linkedin_token
@@ -581,7 +675,7 @@ with st.sidebar:
             "Or Paste Access Token Manually",
             value="",
             type="password",
-            help="Your token is private and only stored in this browser tab.",
+            help="Your token is private and cached on this device only.",
         )
 
         if linkedin_token_input:
@@ -590,19 +684,54 @@ with st.sidebar:
                     profile = get_linkedin_user_profile(linkedin_token_input)
                     if profile["success"]:
                         st.session_state.linkedin_access_token = linkedin_token_input
+                        st.session_state.cached_linkedin_token = linkedin_token_input
                         st.session_state.linkedin_profile = profile
                         st.success(f"Connected as **{profile['name']}**!")
                         st.rerun()
                     else:
                         st.error(profile["error"])
     
-    env_linkedin_urn = os.getenv("LINKEDIN_AUTHOR_URN", "")
+    env_linkedin_urn = st.session_state.get("cached_linkedin_urn") or os.getenv("LINKEDIN_AUTHOR_URN", "")
     linkedin_urn_input = st.text_input(
         "LinkedIn Member URN (Optional)",
         value=env_linkedin_urn,
         placeholder="urn:li:person:YOUR_ID or leave blank for auto-detect",
         help="Optional: Only needed if your token has 'w_member_social' without 'openid/profile'.",
     )
+
+    # 3-Day Browser Vault Controls
+    st.divider()
+    st.markdown("### 💾 3-Day Browser Vault")
+    remember_vault = st.toggle(
+        "Remember my keys on this device (3 Days)",
+        value=st.session_state.get("remember_keys_in_browser", True),
+        help="Securely remembers your API keys and LinkedIn connection on this browser for 3 days. Nothing is stored on the server.",
+    )
+    st.session_state.remember_keys_in_browser = remember_vault
+
+    if st.button("🗑️ Clear Stored Keys from Browser", use_container_width=True):
+        st.session_state.cached_gemini_key = ""
+        st.session_state.cached_openai_key = ""
+        st.session_state.cached_groq_key = ""
+        st.session_state.cached_xai_key = ""
+        st.session_state.cached_linkedin_token = ""
+        st.session_state.cached_linkedin_urn = ""
+        st.session_state.linkedin_access_token = ""
+        st.session_state.linkedin_profile = None
+        components.html(
+            """
+            <script>
+            try {
+                window.parent.localStorage.removeItem("ghostwriter_local_vault_v1");
+                window.parent.sessionStorage.removeItem("_vault_probed_once");
+            } catch(e) {}
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+        st.success("Browser vault cleared!")
+        st.rerun()
 
 
     
@@ -1238,4 +1367,49 @@ with tab_history:
                         delete_draft(d_id)
                         st.warning(f"Draft #{d_id} deleted.")
                         st.rerun()
+
+
+# ==========================================
+# 3-DAY BROWSER LOCALSTORAGE PERSISTENCE
+# ==========================================
+if st.session_state.get("remember_keys_in_browser", True):
+    curr_gemini = api_key_input if provider_choice == "Google Gemini" and api_key_input else st.session_state.get("cached_gemini_key", "")
+    curr_openai = api_key_input if provider_choice == "OpenAI (ChatGPT)" and api_key_input else st.session_state.get("cached_openai_key", "")
+    curr_groq = api_key_input if provider_choice == "Groq" and api_key_input else st.session_state.get("cached_groq_key", "")
+    curr_xai = api_key_input if provider_choice == "xAI (Grok)" and api_key_input else st.session_state.get("cached_xai_key", "")
+    curr_li_token = session_linkedin_token or (linkedin_token_input if 'linkedin_token_input' in locals() else "") or st.session_state.get("cached_linkedin_token", "")
+    curr_li_urn = (linkedin_urn_input if 'linkedin_urn_input' in locals() else "") or st.session_state.get("cached_linkedin_urn", "")
+
+    vault_payload = {
+        "gemini_key": curr_gemini,
+        "openai_key": curr_openai,
+        "groq_key": curr_groq,
+        "xai_key": curr_xai,
+        "provider": provider_choice,
+        "linkedin_token": curr_li_token,
+        "linkedin_urn": curr_li_urn,
+        "persona": user_persona if 'user_persona' in locals() else "",
+        "tone": selected_tone if 'selected_tone' in locals() else "",
+    }
+
+    if any(vault_payload.get(k) for k in ["gemini_key", "openai_key", "groq_key", "xai_key", "linkedin_token"]):
+        vault_json = json.dumps(vault_payload)
+        components.html(
+            f"""
+            <script>
+            try {{
+                const vaultKey = "ghostwriter_local_vault_v1";
+                const payload = {{
+                    timestamp: Date.now(),
+                    expires_at: Date.now() + (3 * 24 * 60 * 60 * 1000), // 3 Days
+                    keys: {vault_json}
+                }};
+                window.parent.localStorage.setItem(vaultKey, JSON.stringify(payload));
+            }} catch (e) {{}}
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+
 

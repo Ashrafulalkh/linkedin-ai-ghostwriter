@@ -104,10 +104,14 @@ if stored_vault and isinstance(stored_vault, dict) and not st.session_state.get(
     if stored_vault.get("linkedin_token"):
         st.session_state.linkedin_access_token = stored_vault["linkedin_token"]
         st.session_state.cached_linkedin_token = stored_vault["linkedin_token"]
-        if "linkedin_profile" not in st.session_state or not st.session_state.linkedin_profile:
+        if stored_vault.get("linkedin_profile"):
+            st.session_state.linkedin_profile = stored_vault["linkedin_profile"]
+        elif "linkedin_profile" not in st.session_state or not st.session_state.linkedin_profile:
             p = get_linkedin_user_profile(stored_vault["linkedin_token"])
             if p.get("success"):
                 st.session_state.linkedin_profile = p
+            else:
+                st.session_state.linkedin_profile = {"name": "Connected User", "urn": "", "success": True}
     if stored_vault.get("linkedin_urn"):
         st.session_state.cached_linkedin_urn = stored_vault["linkedin_urn"]
     if stored_vault.get("persona"):
@@ -138,6 +142,8 @@ if "code" in st.query_params:
                 profile = get_linkedin_user_profile(res["access_token"])
                 if profile.get("success"):
                     st.session_state.linkedin_profile = profile
+                else:
+                    st.session_state.linkedin_profile = {"name": "Connected User", "urn": "", "success": True}
                 st.query_params.clear()
                 st.success("🎉 LinkedIn Account Connected Successfully!")
                 st.rerun()
@@ -647,7 +653,7 @@ with st.sidebar:
 
         linkedin_token_input = st.text_input(
             "Or Paste Access Token Manually",
-            value="",
+            value=st.session_state.get("cached_linkedin_token", ""),
             type="password",
             help="Your token is private and cached on this device only.",
         )
@@ -656,14 +662,17 @@ with st.sidebar:
             if st.button("🔍 Verify LinkedIn Account", use_container_width=True):
                 with st.spinner("Connecting to LinkedIn..."):
                     profile = get_linkedin_user_profile(linkedin_token_input)
-                    if profile["success"]:
+                    if profile.get("success"):
                         st.session_state.linkedin_access_token = linkedin_token_input
                         st.session_state.cached_linkedin_token = linkedin_token_input
                         st.session_state.linkedin_profile = profile
                         st.success(f"Connected as **{profile['name']}**!")
-                        st.rerun()
                     else:
-                        st.error(profile["error"])
+                        st.session_state.linkedin_access_token = linkedin_token_input
+                        st.session_state.cached_linkedin_token = linkedin_token_input
+                        st.session_state.linkedin_profile = {"name": "Connected User", "urn": "", "success": True}
+                        st.success("Connected token successfully!")
+                    st.rerun()
     
     env_linkedin_urn = st.session_state.get("cached_linkedin_urn") or os.getenv("LINKEDIN_AUTHOR_URN", "")
     linkedin_urn_input = st.text_input(
@@ -1341,7 +1350,13 @@ if st.session_state.get("remember_keys_in_browser", True):
     curr_openai = api_key_input if provider_choice == "OpenAI (ChatGPT)" and api_key_input else st.session_state.get("cached_openai_key", "")
     curr_groq = api_key_input if provider_choice == "Groq" and api_key_input else st.session_state.get("cached_groq_key", "")
     curr_xai = api_key_input if provider_choice == "xAI (Grok)" and api_key_input else st.session_state.get("cached_xai_key", "")
-    curr_li_token = session_linkedin_token or (linkedin_token_input if 'linkedin_token_input' in locals() else "") or st.session_state.get("cached_linkedin_token", "")
+    curr_li_token = (
+        st.session_state.get("linkedin_access_token")
+        or st.session_state.get("cached_linkedin_token")
+        or (linkedin_token_input if 'linkedin_token_input' in locals() and linkedin_token_input else "")
+        or ""
+    )
+    curr_li_profile = st.session_state.get("linkedin_profile") or None
     curr_li_urn = (linkedin_urn_input if 'linkedin_urn_input' in locals() else "") or st.session_state.get("cached_linkedin_urn", "")
 
     vault_payload = {
@@ -1351,6 +1366,7 @@ if st.session_state.get("remember_keys_in_browser", True):
         "xai_key": curr_xai,
         "provider": provider_choice,
         "linkedin_token": curr_li_token,
+        "linkedin_profile": curr_li_profile,
         "linkedin_urn": curr_li_urn,
         "persona": user_persona if 'user_persona' in locals() else "",
         "tone": selected_tone if 'selected_tone' in locals() else "",

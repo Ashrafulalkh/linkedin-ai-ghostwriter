@@ -80,6 +80,7 @@ from modules.time_utils import (
     POPULAR_TIMEZONES,
     format_for_user,
     format_relative_countdown,
+    get_system_default_timezone,
     get_timezone,
     get_user_now,
     user_dt_to_utc_iso,
@@ -97,6 +98,10 @@ st.set_page_config(
 # Initialize SQLite database and start background scheduler daemon
 init_db()
 start_background_scheduler(interval_seconds=15)
+
+# Initialize default timezone based on computer system
+if "user_selected_timezone" not in st.session_state or not st.session_state.user_selected_timezone:
+    st.session_state.user_selected_timezone = get_system_default_timezone()
 
 # ==========================================
 # 3-DAY BROWSER LOCALSTORAGE VAULT COMPONENT
@@ -116,9 +121,11 @@ stored_vault = _browser_vault(action="read", key="vault_reader_act")
 if stored_vault and isinstance(stored_vault, dict):
     if stored_vault.get("_client_timezone"):
         detected_tz = stored_vault["_client_timezone"]
-        st.session_state.client_timezone = detected_tz
-        if "user_selected_timezone" not in st.session_state or not st.session_state.user_selected_timezone:
-            st.session_state.user_selected_timezone = detected_tz
+        if st.session_state.get("client_timezone") != detected_tz:
+            st.session_state.client_timezone = detected_tz
+            if not st.session_state.get("user_manually_selected_tz"):
+                st.session_state.user_selected_timezone = detected_tz
+                st.rerun()
 
 if stored_vault and isinstance(stored_vault, dict) and not st.session_state.get("vault_initialized"):
     if stored_vault.get("gemini_key"):
@@ -757,21 +764,37 @@ with st.sidebar:
     st.markdown("### ⏰ Auto-Post Queue")
 
     # Resolve User Timezone
-    detected_tz = st.session_state.get("client_timezone") or "UTC"
+    detected_tz = st.session_state.get("client_timezone") or get_system_default_timezone()
     current_selected_tz = st.session_state.get("user_selected_timezone") or detected_tz
     tz_list = list(POPULAR_TIMEZONES)
     if current_selected_tz not in tz_list:
-        tz_list.insert(1, current_selected_tz)
+        tz_list.insert(0, current_selected_tz)
 
+    def _format_tz_option(tz_name_str: str) -> str:
+        try:
+            s_dt = get_user_now(tz_name_str)
+            s_abbr = s_dt.strftime("%Z")
+            s_off = s_dt.strftime("%z")
+            off_lbl = f"UTC{s_off[:3]}:{s_off[3:]}" if len(s_off) >= 5 else "UTC"
+            return f"{tz_name_str} ({s_abbr} • {off_lbl} • {s_dt.strftime('%I:%M %p')})"
+        except Exception:
+            return tz_name_str
+
+    current_idx = tz_list.index(current_selected_tz) if current_selected_tz in tz_list else 0
     user_tz_choice = st.selectbox(
         "Your Computer Timezone",
         options=tz_list,
-        index=tz_list.index(current_selected_tz) if current_selected_tz in tz_list else 0,
-        help="Auto-detected from your browser. All post schedules will align with this clock.",
+        index=current_idx,
+        format_func=_format_tz_option,
+        help="Auto-detected from your browser and system. All post schedules will align with this clock.",
     )
-    st.session_state.user_selected_timezone = user_tz_choice
+    if user_tz_choice != st.session_state.get("user_selected_timezone"):
+        st.session_state.user_selected_timezone = user_tz_choice
+        st.session_state.user_manually_selected_tz = True
+        st.rerun()
+
     user_clock = get_user_now(user_tz_choice)
-    st.caption(f"🕒 Your Clock: **{user_clock.strftime('%I:%M:%S %p')}** (`{user_clock.strftime('%Z')}`)")
+    st.caption(f"🕒 **Your Clock:** `{user_clock.strftime('%I:%M:%S %p')} {user_clock.strftime('%Z')}`")
 
     sidebar_scheduled = get_all_drafts(status_filter="scheduled")
     if sidebar_scheduled:

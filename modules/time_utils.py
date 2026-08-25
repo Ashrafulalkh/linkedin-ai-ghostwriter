@@ -1,17 +1,38 @@
 """
 Timezone and datetime synchronization utilities for LinkedIn AI Ghostwriter.
-Ensures post scheduling and timestamps align with the user's local computer time.
+Ensures post scheduling and timestamps align perfectly with the user's local computer time.
 """
 
 from __future__ import annotations
 
+import os
 import zoneinfo
 from datetime import datetime, timezone
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
-# Common major world timezones for easy selection/fallback
+# Common timezone abbreviations mapped to standard IANA timezone names
+TZ_ABBREVIATION_MAP: Dict[str, str] = {
+    "BST": "Europe/London",
+    "GMT": "Europe/London",
+    "UTC": "UTC",
+    "EST": "America/New_York",
+    "EDT": "America/New_York",
+    "CST": "America/Chicago",
+    "CDT": "America/Chicago",
+    "MST": "America/Denver",
+    "MDT": "America/Denver",
+    "PST": "America/Los_Angeles",
+    "PDT": "America/Los_Angeles",
+    "IST": "Asia/Kolkata",
+    "JST": "Asia/Tokyo",
+    "KST": "Asia/Seoul",
+    "AEST": "Australia/Sydney",
+    "AEDT": "Australia/Sydney",
+}
+
+# Popular world timezones
 POPULAR_TIMEZONES: List[str] = [
-    "UTC",
+    "Europe/London",
     "America/New_York",
     "America/Chicago",
     "America/Denver",
@@ -19,7 +40,6 @@ POPULAR_TIMEZONES: List[str] = [
     "America/Toronto",
     "America/Vancouver",
     "America/Sao_Paulo",
-    "Europe/London",
     "Europe/Paris",
     "Europe/Berlin",
     "Europe/Madrid",
@@ -42,33 +62,102 @@ POPULAR_TIMEZONES: List[str] = [
     "Australia/Sydney",
     "Australia/Melbourne",
     "Pacific/Auckland",
+    "UTC",
 ]
+
+
+def get_system_default_timezone() -> str:
+    """
+    Detect the local computer/system timezone dynamically.
+    Checks system symlinks (/etc/localtime), system files, and local UTC offsets.
+    """
+    # 1. Check /etc/localtime symlink (macOS / Linux standard)
+    try:
+        if os.path.islink("/etc/localtime"):
+            target = os.readlink("/etc/localtime")
+            if "zoneinfo/" in target:
+                tz_extracted = target.split("zoneinfo/")[-1].strip()
+                if tz_extracted:
+                    try:
+                        zoneinfo.ZoneInfo(tz_extracted)
+                        return tz_extracted
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 2. Check /etc/timezone file (Debian / Ubuntu / Docker)
+    try:
+        if os.path.exists("/etc/timezone"):
+            with open("/etc/timezone", "r", encoding="utf-8") as f:
+                tz_name = f.read().strip()
+                if tz_name:
+                    try:
+                        zoneinfo.ZoneInfo(tz_name)
+                        return tz_name
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 3. Inspect Python's local astimezone
+    try:
+        local_tz = datetime.now().astimezone().tzinfo
+        if hasattr(local_tz, "key") and local_tz.key:
+            return local_tz.key
+        if hasattr(local_tz, "zone") and local_tz.zone:
+            return local_tz.zone
+        
+        # Check abbreviation
+        now_dt = datetime.now()
+        tz_name = now_dt.astimezone().strftime("%Z")
+        if tz_name in TZ_ABBREVIATION_MAP:
+            return TZ_ABBREVIATION_MAP[tz_name]
+
+        # Match offset to candidate timezones
+        local_offset = now_dt.astimezone().utcoffset()
+        if local_offset is not None:
+            for cand in POPULAR_TIMEZONES:
+                try:
+                    cand_tz = zoneinfo.ZoneInfo(cand)
+                    if now_dt.astimezone(cand_tz).utcoffset() == local_offset:
+                        return cand
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return "Europe/London"
 
 
 def get_timezone(tz_name: Optional[str] = None) -> zoneinfo.ZoneInfo:
     """
-    Safely resolve a ZoneInfo timezone object from a timezone name.
-    Falls back to UTC if the timezone name is invalid or unavailable.
+    Safely resolve a ZoneInfo timezone object.
+    If tz_name is None, empty, or 'auto', automatically detects the computer's local timezone.
     """
-    if not tz_name or not isinstance(tz_name, str):
-        return zoneinfo.ZoneInfo("UTC")
+    if not tz_name or not isinstance(tz_name, str) or tz_name.lower() in ("auto", "none", ""):
+        detected = get_system_default_timezone()
+        try:
+            return zoneinfo.ZoneInfo(detected)
+        except Exception:
+            return zoneinfo.ZoneInfo("UTC")
 
     tz_clean = tz_name.strip()
+    if tz_clean in TZ_ABBREVIATION_MAP:
+        tz_clean = TZ_ABBREVIATION_MAP[tz_clean]
+
     try:
         return zoneinfo.ZoneInfo(tz_clean)
     except Exception:
-        # Fallback to local system timezone or UTC
         try:
-            local_tz = datetime.now().astimezone().tzinfo
-            if isinstance(local_tz, zoneinfo.ZoneInfo):
-                return local_tz
+            fallback = get_system_default_timezone()
+            return zoneinfo.ZoneInfo(fallback)
         except Exception:
-            pass
-        return zoneinfo.ZoneInfo("UTC")
+            return zoneinfo.ZoneInfo("UTC")
 
 
 def get_user_now(tz_name: Optional[str] = None) -> datetime:
-    """Get current datetime in the user's specified computer timezone."""
+    """Get current datetime in the user's computer timezone."""
     tz = get_timezone(tz_name)
     return datetime.now(tz)
 
@@ -76,9 +165,9 @@ def get_user_now(tz_name: Optional[str] = None) -> datetime:
 def parse_datetime_safe(dt_val: Union[str, datetime]) -> datetime:
     """
     Safely parse an ISO string or datetime object into a timezone-aware UTC datetime.
-    Naive inputs are interpreted in the local system timezone before converting to UTC.
+    Naive datetimes are interpreted in the user's local system timezone before converting to UTC.
     """
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    local_tz = get_timezone()
 
     if isinstance(dt_val, datetime):
         if dt_val.tzinfo is None:
@@ -145,8 +234,15 @@ def format_for_user(
     user_dt = utc_iso_to_user_dt(iso_or_dt, tz_name) if isinstance(iso_or_dt, str) else iso_or_dt.astimezone(get_timezone(tz_name))
     formatted = user_dt.strftime(fmt)
     if include_tz:
-        tz_abbr = user_dt.strftime("%Z") or user_dt.strftime("%z")
-        if tz_abbr:
+        tz_abbr = user_dt.strftime("%Z")
+        raw_offset = user_dt.strftime("%z")
+        if raw_offset and len(raw_offset) >= 5:
+            formatted_offset = f"UTC{raw_offset[:3]}:{raw_offset[3:]}"
+            if tz_abbr and tz_abbr != raw_offset:
+                formatted += f" ({tz_abbr} / {formatted_offset})"
+            else:
+                formatted += f" ({formatted_offset})"
+        elif tz_abbr:
             formatted += f" ({tz_abbr})"
     return formatted
 

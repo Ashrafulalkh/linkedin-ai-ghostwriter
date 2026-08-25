@@ -317,16 +317,17 @@ class TestTimeUtils(unittest.TestCase):
     """Test computer timezone synchronization and datetime formatting."""
 
     def test_timezone_resolution(self):
-        from modules.time_utils import get_timezone, get_user_now
+        from modules.time_utils import get_timezone, get_user_now, get_system_default_timezone
         tz_london = get_timezone("Europe/London")
         self.assertEqual(tz_london.key, "Europe/London")
         
         tz_ny = get_timezone("America/New_York")
         self.assertEqual(tz_ny.key, "America/New_York")
 
-        # Invalid fallback
+        # Invalid fallback should default to system timezone
         tz_fallback = get_timezone("Invalid/NonExistent_Zone")
-        self.assertEqual(tz_fallback.key, "UTC")
+        expected_sys = get_system_default_timezone()
+        self.assertEqual(tz_fallback.key, expected_sys)
 
         now_london = get_user_now("Europe/London")
         self.assertEqual(now_london.tzinfo.key, "Europe/London")

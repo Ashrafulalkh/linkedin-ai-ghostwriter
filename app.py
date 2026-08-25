@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 import urllib.parse
 import streamlit as st
@@ -54,13 +55,24 @@ from modules.linkedin_api import (
 )
 from modules.rss_service import FEEDS_CATALOG, get_feed_topics
 from modules.scraper_service import scrape_article_content
+from modules.scheduler import (
+    get_scheduler_info,
+    process_due_scheduled_posts,
+    start_background_scheduler,
+)
 from modules.storage import (
+    cancel_scheduled_draft,
     delete_draft,
     export_drafts_json,
     export_drafts_markdown,
     get_all_drafts,
+    get_draft_by_id,
+    get_due_scheduled_drafts,
     init_db,
+    mark_draft_failed,
+    mark_draft_published,
     save_draft,
+    schedule_draft,
     toggle_favorite,
     update_draft,
 )
@@ -73,8 +85,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Initialize SQLite database
+# Initialize SQLite database and start background scheduler daemon
 init_db()
+start_background_scheduler(interval_seconds=15)
 
 # ==========================================
 # 3-DAY BROWSER LOCALSTORAGE VAULT COMPONENT
@@ -394,6 +407,46 @@ st.markdown(
         color: #0A66C2;
     }
 
+    /* Status Badges & Schedule Indicators */
+    .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 9px;
+        border-radius: 8px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+    }
+    .status-scheduled {
+        background: rgba(245, 158, 11, 0.16);
+        color: #F59E0B;
+        border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+    .status-published {
+        background: rgba(16, 185, 129, 0.16);
+        color: #10B981;
+        border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .status-failed {
+        background: rgba(239, 68, 68, 0.16);
+        color: #EF4444;
+        border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+    .status-draft {
+        background: rgba(148, 163, 184, 0.14);
+        color: #94A3B8;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+    }
+    .schedule-info-banner {
+        background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(10, 102, 194, 0.08) 100%);
+        border: 1px solid rgba(245, 158, 11, 0.25);
+        border-radius: 10px;
+        padding: 12px 16px;
+        margin: 10px 0 14px 0;
+    }
+
     /* Pulse Indicator */
     .pulse-dot {
         width: 8px;
@@ -681,6 +734,20 @@ with st.sidebar:
         placeholder="urn:li:person:YOUR_ID or leave blank for auto-detect",
         help="Optional: Only needed if your token has 'w_member_social' without 'openid/profile'.",
     )
+
+    # Auto-Post Scheduled Queue Status in Sidebar
+    st.divider()
+    st.markdown("### ⏰ Auto-Post Queue")
+    sidebar_scheduled = get_all_drafts(status_filter="scheduled")
+    if sidebar_scheduled:
+        st.success(f"⏳ **{len(sidebar_scheduled)} post(s)** scheduled for auto-publishing", icon="⏰")
+        for sp in sidebar_scheduled[:3]:
+            sched_ts = sp.get('scheduled_at', '')[:16].replace('T', ' ')
+            st.caption(f"• **{sp['title'][:26]}...**\n  🕒 `{sched_ts}`")
+        if len(sidebar_scheduled) > 3:
+            st.caption(f"*+ {len(sidebar_scheduled) - 3} more in History tab*")
+    else:
+        st.caption("No posts currently scheduled. Schedule posts in Studio or Drafts tab.")
 
     # 3-Day Browser Vault Controls
     st.divider()
@@ -1148,48 +1215,142 @@ with tab_studio:
                             st.session_state.generated_post = res["data"]
                             set_editor_content(res["data"]["full_assembled_post"])
                             st.rerun()
-
-        # Dedicated LinkedIn Publishing Section
-        st.markdown("---")
-        st.markdown("### 🚀 Publish to LinkedIn")
-        pub_col1, pub_col2 = st.columns([1.2, 1.2])
-
-        with pub_col1:
-            active_token = linkedin_token_input or session_linkedin_token
-            # Direct API Publishing Button
-
-            if st.button("🚀 Publish Directly to My LinkedIn Feed", type="primary", use_container_width=True):
-                if not edited_text.strip():
-                    st.warning("Cannot publish an empty post! Please type or generate a post first.")
-                elif not active_token:
-                    st.warning("Please connect your LinkedIn account in the sidebar first!")
-                else:
-                    with st.spinner("Publishing post directly to LinkedIn..."):
-                        story_info = st.session_state.selected_story or {}
-                        pub_res = publish_post_to_linkedin(
-                            access_token=active_token,
-                            text_content=edited_text,
-                            author_urn=linkedin_urn_input if linkedin_urn_input else None,
-                            article_url=story_info.get("url"),
-                        )
-                        if pub_res["success"]:
-                            st.balloons()
-                            post_url = pub_res.get("post_url", "https://www.linkedin.com/feed/")
-                            st.success(f"🎉 Post published successfully to LinkedIn!")
-                            st.markdown(f"👉 **[View your live post on LinkedIn ↗]({post_url})**")
                         else:
-                            st.error(pub_res["error"])
+                            st.error(res["error"])
 
-        with pub_col2:
-            story_info = st.session_state.selected_story or {}
-            article_link = story_info.get("url") if story_info else None
-            composer_url = generate_web_composer_url(edited_text, article_link)
-            st.link_button(
-                "🌐 Open in LinkedIn Web Composer (0 Setup)",
-                url=composer_url,
-                use_container_width=True,
-                help="Opens LinkedIn with your draft ready to publish in 1 click.",
-            )
+        # Dedicated LinkedIn Publishing & Scheduling Section
+        st.markdown("---")
+        st.markdown("### 🚀 Publish or ⏰ Schedule Post")
+        active_token = linkedin_token_input or session_linkedin_token
+
+        tab_pub_direct, tab_pub_schedule = st.tabs(["🚀 Instant Publish", "⏰ Schedule for Later"])
+
+        with tab_pub_direct:
+            pub_col1, pub_col2 = st.columns([1.2, 1.2])
+            with pub_col1:
+                if st.button("🚀 Publish Directly to My LinkedIn Feed", type="primary", use_container_width=True, key="btn_pub_direct"):
+                    if not edited_text.strip():
+                        st.warning("Cannot publish an empty post! Please type or generate a post first.")
+                    elif not active_token:
+                        st.warning("Please connect your LinkedIn account in the sidebar first!")
+                    else:
+                        with st.spinner("Publishing post directly to LinkedIn..."):
+                            story_info = st.session_state.selected_story or {}
+                            pub_res = publish_post_to_linkedin(
+                                access_token=active_token,
+                                text_content=edited_text,
+                                author_urn=linkedin_urn_input if linkedin_urn_input else None,
+                                article_url=story_info.get("url"),
+                            )
+                            if pub_res["success"]:
+                                st.balloons()
+                                post_url = pub_res.get("post_url", "https://www.linkedin.com/feed/")
+                                st.success("🎉 Post published successfully to LinkedIn!")
+                                st.markdown(f"👉 **[View your live post on LinkedIn ↗]({post_url})**")
+                            else:
+                                st.error(pub_res["error"])
+
+            with pub_col2:
+                story_info = st.session_state.selected_story or {}
+                article_link = story_info.get("url") if story_info else None
+                composer_url = generate_web_composer_url(edited_text, article_link)
+                st.link_button(
+                    "🌐 Open in LinkedIn Web Composer (0 Setup)",
+                    url=composer_url,
+                    use_container_width=True,
+                    help="Opens LinkedIn with your draft ready to publish in 1 click.",
+                )
+
+        with tab_pub_schedule:
+            st.caption("Select a future date and time for our background daemon to automatically publish your post.")
+            now_dt = datetime.now()
+
+            # Preset Buttons
+            pres_col1, pres_col2, pres_col3, pres_col4 = st.columns(4)
+            with pres_col1:
+                if st.button("⚡ In 1 Hour", key="studio_preset_1h", use_container_width=True):
+                    tgt = now_dt + timedelta(hours=1)
+                    st.session_state.studio_sched_date = tgt.date()
+                    st.session_state.studio_sched_time = tgt.time().replace(second=0, microsecond=0)
+                    st.rerun()
+            with pres_col2:
+                if st.button("🌅 Tomorrow 9 AM", key="studio_preset_tom9", use_container_width=True):
+                    tgt = (now_dt + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+                    st.session_state.studio_sched_date = tgt.date()
+                    st.session_state.studio_sched_time = tgt.time()
+                    st.rerun()
+            with pres_col3:
+                if st.button("🌇 Tomorrow 5 PM", key="studio_preset_tom5", use_container_width=True):
+                    tgt = (now_dt + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+                    st.session_state.studio_sched_date = tgt.date()
+                    st.session_state.studio_sched_time = tgt.time()
+                    st.rerun()
+            with pres_col4:
+                if st.button("📆 In 2 Days 10 AM", key="studio_preset_2d10", use_container_width=True):
+                    tgt = (now_dt + timedelta(days=2)).replace(hour=10, minute=0, second=0, microsecond=0)
+                    st.session_state.studio_sched_date = tgt.date()
+                    st.session_state.studio_sched_time = tgt.time()
+                    st.rerun()
+
+            col_s_date, col_s_time = st.columns(2)
+            with col_s_date:
+                default_date = st.session_state.get("studio_sched_date", (now_dt + timedelta(hours=2)).date())
+                sched_date = st.date_input("Scheduled Date", value=default_date, min_value=now_dt.date(), key="studio_sched_date_input")
+            with col_s_time:
+                default_time = st.session_state.get("studio_sched_time", (now_dt + timedelta(hours=2)).time().replace(second=0, microsecond=0))
+                sched_time = st.time_input("Scheduled Time", value=default_time, key="studio_sched_time_input")
+
+            selected_target_dt = datetime.combine(sched_date, sched_time)
+            time_diff = selected_target_dt - now_dt
+
+            if time_diff.total_seconds() <= 0:
+                st.warning("⚠️ Target date and time must be in the future.")
+            else:
+                hours_left = int(time_diff.total_seconds() // 3600)
+                mins_left = int((time_diff.total_seconds() % 3600) // 60)
+                human_diff = f"in {hours_left}h {mins_left}m" if hours_left > 0 else f"in {mins_left}m"
+                formatted_target_str = selected_target_dt.strftime("%A, %b %d, %Y at %I:%M %p")
+                
+                st.markdown(
+                    f"""
+                    <div class="schedule-info-banner">
+                        <div>🕒 <b>Scheduled Target:</b> {formatted_target_str} (<b>{human_diff}</b>)</div>
+                        <div style="font-size:0.84rem; opacity:0.85; margin-top:4px;">
+                            The post will automatically publish to your connected LinkedIn profile when the background daemon detects it.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if st.button("🗓️ Confirm & Schedule LinkedIn Post", type="primary", use_container_width=True, key="btn_confirm_studio_sched"):
+                    if not edited_text.strip():
+                        st.warning("Cannot schedule an empty post! Please write or generate content first.")
+                    elif not active_token:
+                        st.warning("Please connect your LinkedIn account in the sidebar first so credentials are saved for auto-publishing!")
+                    else:
+                        story_info = st.session_state.selected_story or {}
+                        draft_title = story_info.get("title", edited_text.split("\n")[0][:60])
+                        d_id = save_draft(
+                            title=draft_title,
+                            full_content=edited_text,
+                            source_type=story_info.get("source", "Custom"),
+                            source_url=story_info.get("url", ""),
+                            source_title=story_info.get("title", ""),
+                            tone=selected_tone,
+                            persona=user_persona,
+                            hooks=[gen_data.get("hook_option_1", ""), gen_data.get("hook_option_2", "")],
+                            body=gen_data.get("body", ""),
+                            takeaway=gen_data.get("technical_takeaway", ""),
+                            question=gen_data.get("discussion_question", ""),
+                            hashtags=" ".join(gen_data.get("hashtags", [])),
+                            status="scheduled",
+                            scheduled_at=selected_target_dt.isoformat(),
+                            access_token=active_token,
+                            author_urn=linkedin_urn_input or "",
+                        )
+                        st.balloons()
+                        st.success(f"🎉 Post scheduled as Draft #{d_id}! It will automatically publish on **{formatted_target_str}**.")
 
     with col_preview:
         st.markdown("#### 📱 LinkedIn Feed Preview")
@@ -1239,18 +1400,35 @@ with tab_studio:
 # ==========================================
 with tab_history:
     st.subheader("Saved Drafts & Post Archives")
-    st.caption("Locally saved in SQLite database. Search, edit, star, publish, or export.")
+    st.caption("Locally saved in SQLite database. Search, edit, schedule, star, publish, or export.")
 
-    col_h_search, col_h_fav, col_h_exp = st.columns([3, 2, 2])
+    col_h_filter, col_h_search, col_h_exp = st.columns([3, 3, 2])
+    with col_h_filter:
+        status_filter_choice = st.selectbox(
+            "Filter by Status",
+            ["All Posts", "⏰ Scheduled Only", "📝 Drafts Only", "✅ Published Only", "⭐ Starred Only", "❌ Failed Only"],
+            index=0,
+            label_visibility="collapsed",
+        )
     with col_h_search:
         draft_search = st.text_input("Search archives...", placeholder="Search drafts by keyword or tag", label_visibility="collapsed")
-    with col_h_fav:
-        filter_favorites = st.checkbox("⭐ Starred Only", value=False)
     with col_h_exp:
         export_mode = st.selectbox("Export Format", ["Markdown (.md)", "JSON (.json)"], label_visibility="collapsed")
 
+    # Map status filter to storage parameters
+    fav_only = status_filter_choice == "⭐ Starred Only"
+    status_filter_val = None
+    if status_filter_choice == "⏰ Scheduled Only":
+        status_filter_val = "scheduled"
+    elif status_filter_choice == "📝 Drafts Only":
+        status_filter_val = "draft"
+    elif status_filter_choice == "✅ Published Only":
+        status_filter_val = "published"
+    elif status_filter_choice == "❌ Failed Only":
+        status_filter_val = "failed"
+
     # Fetch stored drafts
-    stored_drafts = get_all_drafts(favorites_only=filter_favorites, search_query=draft_search)
+    stored_drafts = get_all_drafts(favorites_only=fav_only, search_query=draft_search, status_filter=status_filter_val)
 
     # Export buttons
     col_exp_btn, _ = st.columns([2, 5])
@@ -1277,42 +1455,149 @@ with tab_history:
     st.markdown("<hr style='margin: 16px 0;'>", unsafe_allow_html=True)
 
     if not stored_drafts:
-        st.info("No saved drafts found matching your criteria.")
+        st.info("No posts found matching your current filter criteria.")
     else:
         active_token = linkedin_token_input or session_linkedin_token
-        for d in stored_drafts:
+        now_dt = datetime.now()
 
+        for d in stored_drafts:
             d_id = d["id"]
             is_fav = d.get("is_favorite") == 1
             star_label = "⭐" if is_fav else "☆"
+            d_status = (d.get("status") or "draft").lower()
+            
+            # Format header status badge
+            if d_status == "scheduled":
+                sched_at_str = d.get("scheduled_at") or ""
+                time_badge = sched_at_str[:16].replace("T", " ") if sched_at_str else ""
+                expander_title = f"⏳ [SCHEDULED: {time_badge}] {star_label} {d['title']}"
+            elif d_status == "published":
+                pub_at_str = d.get("published_at") or ""
+                time_badge = pub_at_str[:16].replace("T", " ") if pub_at_str else ""
+                expander_title = f"✅ [PUBLISHED] {star_label} {d['title']} ({time_badge})"
+            elif d_status == "failed":
+                expander_title = f"❌ [AUTO-PUBLISH FAILED] {star_label} {d['title']}"
+            else:
+                created_badge = d.get('created_at', '')[:10]
+                expander_title = f"📝 [{d.get('tone', 'Post')}] {star_label} {d['title']} ({created_badge})"
 
-            with st.expander(f"{star_label} [{d.get('tone', 'Post')}] {d['title']} ({d['created_at'][:10]})", expanded=False):
+            with st.expander(expander_title, expanded=False):
+                # Status banner inside expander
+                if d_status == "scheduled":
+                    sched_dt_iso = d.get("scheduled_at")
+                    countdown_desc = ""
+                    if sched_dt_iso:
+                        try:
+                            s_dt = datetime.fromisoformat(sched_dt_iso)
+                            delta = s_dt - now_dt
+                            if delta.total_seconds() > 0:
+                                hrs = int(delta.total_seconds() // 3600)
+                                mins = int((delta.total_seconds() % 3600) // 60)
+                                countdown_desc = f" • Auto-publishing in **{hrs}h {mins}m**"
+                            else:
+                                countdown_desc = " • *Due now, background worker processing...*"
+                        except Exception:
+                            pass
+
+                    st.markdown(
+                        f"""
+                        <div class="schedule-info-banner">
+                            <div><span class="status-badge status-scheduled">⏳ Scheduled</span> &nbsp; Target: <b>{d.get('scheduled_at', '')[:19].replace('T', ' ')}</b>{countdown_desc}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    
+                    col_sched_ctrl1, col_sched_ctrl2 = st.columns([1.5, 2])
+                    with col_sched_ctrl1:
+                        if st.button("🚫 Cancel Schedule", key=f"cancel_sched_{d_id}", use_container_width=True):
+                            cancel_scheduled_draft(d_id)
+                            st.warning(f"Schedule cancelled. Post reverted to draft #{d_id}.")
+                            st.rerun()
+
+                    with col_sched_ctrl2:
+                        with st.popover("✏️ Reschedule Time", use_container_width=True):
+                            st.markdown(f"**Reschedule Post #{d_id}**")
+                            resched_d = st.date_input("New Date", value=(now_dt + timedelta(hours=1)).date(), min_value=now_dt.date(), key=f"resched_d_{d_id}")
+                            resched_t = st.time_input("New Time", value=(now_dt + timedelta(hours=1)).time().replace(second=0, microsecond=0), key=f"resched_t_{d_id}")
+                            new_combined = datetime.combine(resched_d, resched_t)
+                            if st.button("Confirm Reschedule", key=f"btn_confirm_resched_{d_id}", type="primary", use_container_width=True):
+                                if new_combined <= now_dt:
+                                    st.error("Please select a future time.")
+                                else:
+                                    schedule_draft(d_id, scheduled_at_iso=new_combined.isoformat(), access_token=active_token, author_urn=linkedin_urn_input or None)
+                                    st.success(f"Post #{d_id} rescheduled for {new_combined.strftime('%b %d, %Y at %I:%M %p')}!")
+                                    st.rerun()
+
+                elif d_status == "published":
+                    pub_ts = d.get("published_at", "")[:19].replace("T", " ")
+                    post_link_html = f"&nbsp;|&nbsp; <a href='{d.get('post_url')}' target='_blank' style='color:#0A66C2; font-weight:600;'>View Live Post on LinkedIn ↗</a>" if d.get("post_url") else ""
+                    st.markdown(
+                        f"""
+                        <div class="schedule-info-banner" style="background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.25);">
+                            <div><span class="status-badge status-published">✅ Published</span> Published on: <b>{pub_ts}</b> {post_link_html}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                elif d_status == "failed":
+                    st.markdown(
+                        f"""
+                        <div class="schedule-info-banner" style="background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.25);">
+                            <div><span class="status-badge status-failed">❌ Auto-Publish Failed</span> <b>Error:</b> {d.get('publish_error', 'Unspecified error')}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    # Draft - provide schedule expander/popover
+                    with st.expander("⏰ Schedule This Draft for Auto-Publishing", expanded=False):
+                        col_sd1, col_sd2 = st.columns(2)
+                        with col_sd1:
+                            sd_d = st.date_input("Date", value=(now_dt + timedelta(hours=2)).date(), min_value=now_dt.date(), key=f"draft_sd_{d_id}")
+                        with col_sd2:
+                            sd_t = st.time_input("Time", value=(now_dt + timedelta(hours=2)).time().replace(second=0, microsecond=0), key=f"draft_st_{d_id}")
+                        
+                        target_sd = datetime.combine(sd_d, sd_t)
+                        if st.button("🗓️ Schedule This Post", key=f"btn_sched_draft_{d_id}", type="primary", use_container_width=True):
+                            if target_sd <= now_dt:
+                                st.error("Please pick a date and time in the future.")
+                            elif not active_token:
+                                st.warning("Please connect your LinkedIn account in the sidebar first!")
+                            else:
+                                schedule_draft(d_id, scheduled_at_iso=target_sd.isoformat(), access_token=active_token, author_urn=linkedin_urn_input or None)
+                                st.success(f"Draft #{d_id} scheduled for {target_sd.strftime('%A, %b %d, %Y at %I:%M %p')}!")
+                                st.rerun()
+
                 st.markdown(f"**Tone:** `{d.get('tone')}` | **Source:** `{d.get('source_type')}` | **Created:** `{d.get('created_at')}`")
                 if d.get("source_url"):
                     st.markdown(f"**Source Link:** [{d['source_url']}]({d['source_url']})")
                 
-                draft_body = st.text_area(f"Content (Draft #{d_id})", value=d["full_content"], height=200, key=f"draft_txt_{d_id}")
+                draft_body = st.text_area(f"Content (Post #{d_id})", value=d["full_content"], height=200, key=f"draft_txt_{d_id}")
 
                 c_act1, c_act2, c_act3, c_act4, c_act5 = st.columns([2, 1.5, 1.2, 1.2, 1])
                 
                 with c_act1:
-                    # 1-Click Publish directly from Tab 4 Drafts
-                    if st.button(f"🚀 Publish to LinkedIn", key=f"pub_draft_{d_id}", type="primary", use_container_width=True):
+                    # 1-Click Publish directly from Tab 4
+                    if st.button(f"🚀 Publish Now", key=f"pub_draft_{d_id}", type="primary", use_container_width=True):
                         if not active_token:
                             st.warning("Please connect your LinkedIn account in the sidebar first!")
                         else:
-                            with st.spinner("Publishing draft to LinkedIn..."):
+                            with st.spinner("Publishing to LinkedIn..."):
                                 pub_res = publish_post_to_linkedin(
                                     access_token=active_token,
                                     text_content=draft_body,
                                     author_urn=linkedin_urn_input if linkedin_urn_input else None,
                                     article_url=d.get("source_url"),
+                                    timeout=15,
                                 )
                                 if pub_res["success"]:
                                     st.balloons()
                                     post_url = pub_res.get("post_url", "https://www.linkedin.com/feed/")
-                                    st.success(f"🎉 Draft #{d_id} published to LinkedIn!")
+                                    mark_draft_published(d_id, post_urn=pub_res.get("post_urn"), post_url=post_url)
+                                    st.success(f"🎉 Post #{d_id} published to LinkedIn!")
                                     st.markdown(f"👉 **[View live post on LinkedIn ↗]({post_url})**")
+                                    st.rerun()
                                 else:
                                     st.error(pub_res["error"])
 
@@ -1325,7 +1610,7 @@ with tab_history:
                             "url": d.get("source_url", ""),
                             "source": d.get("source_type", "Draft"),
                         }
-                        st.success(f"Draft #{d_id} loaded into Studio! Switch to Tab 3.")
+                        st.success(f"Post #{d_id} loaded into Studio! Switch to Tab 3.")
                 with c_act3:
                     fav_btn_text = "Unstar" if is_fav else "⭐ Star"
                     if st.button(fav_btn_text, key=f"fav_{d_id}", use_container_width=True):
@@ -1334,11 +1619,11 @@ with tab_history:
                 with c_act4:
                     if st.button("Update Text", key=f"update_{d_id}", use_container_width=True):
                         update_draft(d_id, title=d["title"], full_content=draft_body)
-                        st.success("Draft updated!")
+                        st.success("Post updated!")
                 with c_act5:
                     if st.button("🗑️ Delete", key=f"del_{d_id}", use_container_width=True):
                         delete_draft(d_id)
-                        st.warning(f"Draft #{d_id} deleted.")
+                        st.warning(f"Post #{d_id} deleted.")
                         st.rerun()
 
 

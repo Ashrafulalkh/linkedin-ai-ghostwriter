@@ -41,7 +41,13 @@ It automatically pulls live tech and research news via RSS feeds, scrapes custom
    - **Direct REST API Publish**: 1-Click publish directly to your LinkedIn profile via LinkedIn Developer API (`w_member_social`).
    - **1-Click Web Composer**: Instant web intent button opening LinkedIn's composer in a new tab with zero setup.
 
-7. **SQLite Storage & Archive Management**:
+7. **⏰ Automated Post Scheduling & Background Auto-Publishing**:
+   - **Schedule for Later**: Schedule crafted posts from Post Studio or saved drafts for any future date & time.
+   - **Smart Presets**: 1-click scheduling (+1 Hour, Tomorrow 9 AM, Tomorrow 5 PM, In 2 Days 10 AM, or Custom Date/Time).
+   - **Background Worker Daemon**: Built-in lightweight scheduler thread continuously monitors SQLite and auto-publishes due posts to LinkedIn without manual intervention.
+   - **Status & History Tracking**: Visual status badges (`Scheduled`, `Published`, `Failed`, `Draft`), live countdowns, rescheduling, and cancellation options.
+
+8. **SQLite Storage & Archive Management**:
    - Save drafts locally into SQLite database (`data/ghostwriter.db`).
    - Star favorite posts, search history, update drafts, or delete old ones.
    - One-click export to **JSON** or consolidated **Markdown**.
@@ -76,7 +82,9 @@ made_task_easy/
 ├── modules/
 │   ├── __init__.py
 │   ├── ai_generator.py         # Google Gen AI SDK integration & structured schemas
+│   ├── linkedin_api.py         # LinkedIn API OAuth & publishing integrations
 │   ├── rss_service.py          # Curated RSS feed aggregation & search
+│   ├── scheduler.py            # Background auto-publishing worker daemon
 │   ├── scraper_service.py      # Article extraction for custom URLs
 │   └── storage.py              # SQLite persistence for drafts, stars & exports
 ├── data/                       # Local SQLite database directory (auto-created)

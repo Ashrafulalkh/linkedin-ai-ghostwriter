@@ -271,9 +271,23 @@ def publish_post_to_linkedin(
                 "error": None,
             }
         else:
+            err_text = response.text
+            if "REVOKED_ACCESS_TOKEN" in err_text or "65601" in err_text:
+                friendly_error = (
+                    "LinkedIn Token Revoked (401): This token was revoked or expired (e.g. you re-authenticated or changed credentials). "
+                    "Please reconnect LinkedIn in the sidebar, or click '🔄 Re-apply Active LinkedIn Token' on this post to retry."
+                )
+            elif response.status_code == 401:
+                friendly_error = (
+                    "LinkedIn Authentication Error (401): The access token is invalid or expired. "
+                    "Please reconnect your LinkedIn account in the sidebar."
+                )
+            else:
+                friendly_error = f"LinkedIn API Publish Error ({response.status_code}): {err_text}"
+
             return {
                 "success": False,
-                "error": f"LinkedIn API Publish Error ({response.status_code}): {response.text}",
+                "error": friendly_error,
                 "post_urn": None,
                 "post_url": None,
             }

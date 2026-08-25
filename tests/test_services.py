@@ -142,7 +142,7 @@ class TestStorage(unittest.TestCase):
         self.assertTrue(any(d["id"] == draft_id for d in filtered_failed))
 
         # 8. Test backfilling author URN and auto-recovering failed drafts
-        from modules.storage import update_empty_author_urn_drafts
+        from modules.storage import update_empty_author_urn_drafts, bulk_update_draft_tokens, retry_failed_draft_with_token
         mark_draft_failed(draft_id, error_msg="Could not determine LinkedIn author URN: HTTP 401")
         backfilled = update_empty_author_urn_drafts("TEST_PERSON_123", access_token="tok_123")
         self.assertGreaterEqual(backfilled, 1)
@@ -150,6 +150,19 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(recovered_draft["author_urn"], "urn:li:person:TEST_PERSON_123")
         self.assertEqual(recovered_draft["status"], "scheduled")
         self.assertIsNone(recovered_draft["publish_error"])
+
+        # 9. Test retry_failed_draft_with_token and bulk_update_draft_tokens
+        mark_draft_failed(draft_id, error_msg="REVOKED_ACCESS_TOKEN 401")
+        retried = retry_failed_draft_with_token(draft_id, access_token="new_fresh_token", author_urn="urn:li:person:NEW_ID")
+        self.assertTrue(retried)
+        r_draft = get_draft_by_id(draft_id)
+        self.assertEqual(r_draft["status"], "scheduled")
+        self.assertEqual(r_draft["access_token"], "new_fresh_token")
+
+        bulk_count = bulk_update_draft_tokens("bulk_fresh_token", "urn:li:person:BULK_ID")
+        self.assertGreaterEqual(bulk_count, 1)
+        b_draft = get_draft_by_id(draft_id)
+        self.assertEqual(b_draft["access_token"], "bulk_fresh_token")
 
         # Clean up
         delete_draft(draft_id)

@@ -96,6 +96,17 @@ def process_due_scheduled_posts() -> List[Dict[str, Any]]:
                 article_url=draft.get("source_url"),
             )
 
+            # If failed due to revoked token, attempt fallback to environment token if available
+            env_token = (os.getenv("LINKEDIN_ACCESS_TOKEN") or "").strip()
+            if not pub_res.get("success") and env_token and env_token != access_token:
+                logger.info("Draft #%d token failed. Retrying with active environment token...", draft_id)
+                pub_res = publish_post_to_linkedin(
+                    access_token=env_token,
+                    text_content=draft["full_content"],
+                    author_urn=author_urn,
+                    article_url=draft.get("source_url"),
+                )
+
             if pub_res.get("success"):
                 post_urn = pub_res.get("post_urn", "")
                 post_url = pub_res.get("post_url", "")

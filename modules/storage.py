@@ -281,16 +281,16 @@ def update_empty_author_urn_drafts(author_urn: str, access_token: Optional[str] 
                 SET author_urn = ?,
                     access_token = COALESCE(NULLIF(access_token, ''), ?),
                     status = CASE 
-                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN 'scheduled' 
+                        WHEN status = 'failed' AND (publish_error LIKE '%author URN%' OR publish_error LIKE '%REVOKED%' OR publish_error LIKE '%401%') THEN 'scheduled' 
                         ELSE status 
                     END,
                     publish_error = CASE 
-                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN NULL 
+                        WHEN status = 'failed' AND (publish_error LIKE '%author URN%' OR publish_error LIKE '%REVOKED%' OR publish_error LIKE '%401%') THEN NULL 
                         ELSE publish_error 
                     END,
                     updated_at = ?
                 WHERE (author_urn IS NULL OR author_urn = '')
-                   OR (status = 'failed' AND publish_error LIKE '%author URN%')
+                   OR (status = 'failed' AND (publish_error LIKE '%author URN%' OR publish_error LIKE '%REVOKED%' OR publish_error LIKE '%401%'))
                 """,
                 (clean_urn, access_token.strip(), now),
             )
@@ -300,22 +300,112 @@ def update_empty_author_urn_drafts(author_urn: str, access_token: Optional[str] 
                 UPDATE drafts
                 SET author_urn = ?,
                     status = CASE 
-                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN 'scheduled' 
+                        WHEN status = 'failed' AND (publish_error LIKE '%author URN%' OR publish_error LIKE '%REVOKED%' OR publish_error LIKE '%401%') THEN 'scheduled' 
                         ELSE status 
                     END,
                     publish_error = CASE 
-                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN NULL 
+                        WHEN status = 'failed' AND (publish_error LIKE '%author URN%' OR publish_error LIKE '%REVOKED%' OR publish_error LIKE '%401%') THEN NULL 
                         ELSE publish_error 
                     END,
                     updated_at = ?
                 WHERE (author_urn IS NULL OR author_urn = '')
-                   OR (status = 'failed' AND publish_error LIKE '%author URN%')
+                   OR (status = 'failed' AND (publish_error LIKE '%author URN%' OR publish_error LIKE '%REVOKED%' OR publish_error LIKE '%401%'))
                 """,
                 (clean_urn, now),
             )
         updated_count = cursor.rowcount
     conn.close()
     return updated_count
+
+
+def bulk_update_draft_tokens(new_token: str, new_author_urn: Optional[str] = None) -> int:
+    """
+    Update all pending scheduled and failed drafts with the latest active access token and author URN,
+    resetting failed drafts to scheduled so they can retry publishing.
+    """
+    if not new_token or not new_token.strip():
+        return 0
+
+    token_clean = new_token.strip()
+    urn_clean = new_author_urn.strip() if new_author_urn and new_author_urn.strip() else None
+    if urn_clean and not urn_clean.startswith("urn:li:"):
+        urn_clean = f"urn:li:person:{urn_clean}"
+
+    init_db()
+    conn = get_db_connection()
+    now = datetime.now().isoformat()
+    with conn:
+        if urn_clean:
+            cursor = conn.execute(
+                """
+                UPDATE drafts
+                SET access_token = ?,
+                    author_urn = COALESCE(NULLIF(?, ''), author_urn),
+                    status = CASE WHEN status = 'failed' THEN 'scheduled' ELSE status END,
+                    publish_error = CASE WHEN status = 'failed' THEN NULL ELSE publish_error END,
+                    updated_at = ?
+                WHERE status IN ('scheduled', 'failed')
+                """,
+                (token_clean, urn_clean, now),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE drafts
+                SET access_token = ?,
+                    status = CASE WHEN status = 'failed' THEN 'scheduled' ELSE status END,
+                    publish_error = CASE WHEN status = 'failed' THEN NULL ELSE publish_error END,
+                    updated_at = ?
+                WHERE status IN ('scheduled', 'failed')
+                """,
+                (token_clean, now),
+            )
+        count = cursor.rowcount
+    conn.close()
+    return count
+
+
+def retry_failed_draft_with_token(draft_id: int, access_token: str, author_urn: Optional[str] = None) -> bool:
+    """Re-apply active credentials to a failed draft and reset it to scheduled status."""
+    if not access_token or not access_token.strip():
+        return False
+
+    token_clean = access_token.strip()
+    urn_clean = author_urn.strip() if author_urn and author_urn.strip() else None
+    if urn_clean and not urn_clean.startswith("urn:li:"):
+        urn_clean = f"urn:li:person:{urn_clean}"
+
+    init_db()
+    conn = get_db_connection()
+    now = datetime.now().isoformat()
+    with conn:
+        if urn_clean:
+            conn.execute(
+                """
+                UPDATE drafts
+                SET access_token = ?,
+                    author_urn = ?,
+                    status = 'scheduled',
+                    publish_error = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (token_clean, urn_clean, now, int(draft_id)),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE drafts
+                SET access_token = ?,
+                    status = 'scheduled',
+                    publish_error = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (token_clean, now, int(draft_id)),
+            )
+    conn.close()
+    return True
 
 
 def get_due_scheduled_drafts(now_iso: Optional[str] = None) -> List[Dict[str, Any]]:

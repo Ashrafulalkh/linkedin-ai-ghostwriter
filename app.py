@@ -61,6 +61,7 @@ from modules.scheduler import (
     start_background_scheduler,
 )
 from modules.storage import (
+    bulk_update_draft_tokens,
     cancel_scheduled_draft,
     delete_draft,
     export_drafts_json,
@@ -71,6 +72,7 @@ from modules.storage import (
     init_db,
     mark_draft_failed,
     mark_draft_published,
+    retry_failed_draft_with_token,
     save_draft,
     schedule_draft,
     toggle_favorite,
@@ -1662,14 +1664,41 @@ with tab_history:
                         unsafe_allow_html=True,
                     )
                 elif d_status == "failed":
+                    err_msg_text = d.get('publish_error', 'Unspecified error')
                     st.markdown(
                         f"""
                         <div class="schedule-info-banner" style="background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.25);">
-                            <div><span class="status-badge status-failed">❌ Auto-Publish Failed</span> <b>Error:</b> {d.get('publish_error', 'Unspecified error')}</div>
+                            <div><span class="status-badge status-failed">❌ Auto-Publish Failed</span> <b>Reason:</b> {err_msg_text}</div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
+                    col_fail_act1, col_fail_act2 = st.columns([2, 2])
+                    with col_fail_act1:
+                        if st.button("🔄 Re-apply Active LinkedIn Token & Retry", key=f"retry_tok_{d_id}", type="primary", use_container_width=True):
+                            if not active_token:
+                                st.warning("Please connect your LinkedIn account in the sidebar first!")
+                            else:
+                                cur_urn = resolve_current_author_urn(linkedin_urn_input if 'linkedin_urn_input' in locals() else None)
+                                retry_failed_draft_with_token(d_id, access_token=active_token, author_urn=cur_urn or None)
+                                process_due_scheduled_posts()
+                                st.toast(f"✅ Draft #{d_id} credentials updated & queued for auto-publishing!", icon="🚀")
+                                st.rerun()
+                    with col_fail_act2:
+                        with st.popover("✏️ Reschedule for a New Time", use_container_width=True):
+                            st.markdown(f"**Reschedule Post #{d_id}**")
+                            resched_d = st.date_input("New Date", value=(user_now_dt + timedelta(hours=1)).date(), min_value=user_now_dt.date(), key=f"fail_resched_d_{d_id}")
+                            resched_t = st.time_input("New Time", value=(user_now_dt + timedelta(hours=1)).time().replace(second=0, microsecond=0), key=f"fail_resched_t_{d_id}")
+                            new_combined_local = datetime.combine(resched_d, resched_t).replace(tzinfo=get_timezone(user_tz_name))
+                            if st.button("Confirm Reschedule", key=f"btn_confirm_fail_resched_{d_id}", type="primary", use_container_width=True):
+                                if new_combined_local <= user_now_dt:
+                                    st.error("Please select a future time.")
+                                else:
+                                    utc_iso = user_dt_to_utc_iso(new_combined_local, user_tz_name)
+                                    cur_urn = resolve_current_author_urn(linkedin_urn_input if 'linkedin_urn_input' in locals() else None)
+                                    schedule_draft(d_id, scheduled_at_iso=utc_iso, access_token=active_token, author_urn=cur_urn or None)
+                                    st.success(f"Post #{d_id} rescheduled for {format_for_user(new_combined_local, user_tz_name)}!")
+                                    st.rerun()
                 else:
                     # Draft - provide schedule expander/popover
                     with st.expander("⏰ Schedule This Draft for Auto-Publishing", expanded=False):

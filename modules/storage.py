@@ -258,6 +258,66 @@ def mark_draft_failed(draft_id: int, error_msg: str) -> bool:
     return True
 
 
+def update_empty_author_urn_drafts(author_urn: str, access_token: Optional[str] = None) -> int:
+    """
+    Backfill missing author_urn and access_token in any existing drafts,
+    and automatically recover any drafts that failed due to missing URN back to scheduled status.
+    """
+    if not author_urn or not author_urn.strip():
+        return 0
+
+    clean_urn = author_urn.strip()
+    if not clean_urn.startswith("urn:li:"):
+        clean_urn = f"urn:li:person:{clean_urn}"
+
+    init_db()
+    conn = get_db_connection()
+    now = datetime.now().isoformat()
+    with conn:
+        if access_token and access_token.strip():
+            cursor = conn.execute(
+                """
+                UPDATE drafts
+                SET author_urn = ?,
+                    access_token = COALESCE(NULLIF(access_token, ''), ?),
+                    status = CASE 
+                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN 'scheduled' 
+                        ELSE status 
+                    END,
+                    publish_error = CASE 
+                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN NULL 
+                        ELSE publish_error 
+                    END,
+                    updated_at = ?
+                WHERE (author_urn IS NULL OR author_urn = '')
+                   OR (status = 'failed' AND publish_error LIKE '%author URN%')
+                """,
+                (clean_urn, access_token.strip(), now),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE drafts
+                SET author_urn = ?,
+                    status = CASE 
+                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN 'scheduled' 
+                        ELSE status 
+                    END,
+                    publish_error = CASE 
+                        WHEN status = 'failed' AND publish_error LIKE '%author URN%' THEN NULL 
+                        ELSE publish_error 
+                    END,
+                    updated_at = ?
+                WHERE (author_urn IS NULL OR author_urn = '')
+                   OR (status = 'failed' AND publish_error LIKE '%author URN%')
+                """,
+                (clean_urn, now),
+            )
+        updated_count = cursor.rowcount
+    conn.close()
+    return updated_count
+
+
 def get_due_scheduled_drafts(now_iso: Optional[str] = None) -> List[Dict[str, Any]]:
     """Retrieve all drafts scheduled for publishing on or before current UTC time."""
     init_db()

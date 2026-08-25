@@ -41,9 +41,10 @@ def get_linkedin_user_profile(access_token: str, timeout: int = 8) -> Dict[str, 
             sub_id = data.get("sub")
             name = data.get("name") or f"{data.get('given_name', '')} {data.get('family_name', '')}".strip()
             picture = data.get("picture", "")
+            urn = f"urn:li:person:{sub_id}" if sub_id and not str(sub_id).startswith("urn:li:") else str(sub_id or "")
             return {
                 "success": True,
-                "urn": f"urn:li:person:{sub_id}",
+                "urn": urn,
                 "name": name or "LinkedIn User",
                 "picture": picture,
                 "email": data.get("email", ""),
@@ -55,7 +56,7 @@ def get_linkedin_user_profile(access_token: str, timeout: int = 8) -> Dict[str, 
                     "403 Forbidden: Your token only has 'w_member_social' (Write permission). "
                     "To enable auto profile detection, go to your LinkedIn App -> Products tab -> "
                     "request 'Sign In with LinkedIn using OpenID Connect', then regenerate your token with 'openid' and 'profile' selected. "
-                    "Alternatively, you can manually enter your LinkedIn Member URN below."
+                    "Alternatively, you can manually enter your LinkedIn Member URN in the sidebar."
                 ),
             }
     except Exception:
@@ -69,9 +70,10 @@ def get_linkedin_user_profile(access_token: str, timeout: int = 8) -> Dict[str, 
             user_id = data.get("id")
             first_name = data.get("localizedFirstName", "")
             last_name = data.get("localizedLastName", "")
+            urn = f"urn:li:person:{user_id}" if user_id and not str(user_id).startswith("urn:li:") else str(user_id or "")
             return {
                 "success": True,
-                "urn": f"urn:li:person:{user_id}",
+                "urn": urn,
                 "name": f"{first_name} {last_name}".strip() or "LinkedIn User",
                 "picture": "",
             }
@@ -81,7 +83,7 @@ def get_linkedin_user_profile(access_token: str, timeout: int = 8) -> Dict[str, 
                 "error": (
                     f"LinkedIn Profile Read Error (HTTP {resp_me.status_code}): "
                     "Your token lacks profile read permissions ('openid' / 'profile'). "
-                    "Please add 'Sign In with LinkedIn using OpenID Connect' in Products tab, or specify your Person URN manually."
+                    "Please add 'Sign In with LinkedIn using OpenID Connect' in Products tab, or specify your Person URN manually in the sidebar."
                 ),
             }
     except Exception as e:
@@ -89,6 +91,21 @@ def get_linkedin_user_profile(access_token: str, timeout: int = 8) -> Dict[str, 
             "success": False,
             "error": f"Failed to connect to LinkedIn API: {str(e)}",
         }
+
+
+def _decode_jwt_payload_safe(token_str: str) -> Dict[str, Any]:
+    """Safely decode payload of an unverified JWT (e.g. OpenID id_token)."""
+    import base64
+    import json
+    try:
+        parts = token_str.split(".")
+        if len(parts) >= 2:
+            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+            payload_bytes = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
+            return json.loads(payload_bytes.decode("utf-8"))
+    except Exception:
+        pass
+    return {}
 
 
 def exchange_authorization_code(
@@ -100,6 +117,7 @@ def exchange_authorization_code(
 ) -> Dict[str, Any]:
     """
     Exchange OAuth 2.0 authorization code for a LinkedIn Access Token.
+    Extracts OpenID id_token payload if available.
     """
     token_url = "https://www.linkedin.com/oauth/v2/accessToken"
     payload = {
@@ -115,10 +133,23 @@ def exchange_authorization_code(
         if resp.status_code == 200:
             data = resp.json()
             access_token = data.get("access_token")
+            id_token = data.get("id_token")
+            
+            author_urn = None
+            user_name = None
+            if id_token:
+                jwt_payload = _decode_jwt_payload_safe(id_token)
+                sub_val = jwt_payload.get("sub")
+                if sub_val:
+                    author_urn = f"urn:li:person:{sub_val}" if not str(sub_val).startswith("urn:li:") else str(sub_val)
+                user_name = jwt_payload.get("name") or jwt_payload.get("given_name")
+
             return {
                 "success": True,
                 "access_token": access_token,
                 "expires_in": data.get("expires_in"),
+                "author_urn": author_urn,
+                "user_name": user_name,
                 "error": None,
             }
         else:

@@ -82,7 +82,10 @@ def process_due_scheduled_posts() -> List[Dict[str, Any]]:
             continue
 
         # 2. Resolve author URN if saved
-        author_urn = (draft.get("author_urn") or "").strip() or (os.getenv("LINKEDIN_AUTHOR_URN") or "").strip() or None
+        raw_author_urn = (draft.get("author_urn") or "").strip() or (os.getenv("LINKEDIN_AUTHOR_URN") or "").strip() or None
+        author_urn = None
+        if raw_author_urn:
+            author_urn = raw_author_urn if raw_author_urn.startswith("urn:li:") else f"urn:li:person:{raw_author_urn}"
 
         # 3. Publish to LinkedIn
         try:

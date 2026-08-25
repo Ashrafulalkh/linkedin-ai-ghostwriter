@@ -141,6 +141,16 @@ class TestStorage(unittest.TestCase):
         filtered_failed = get_all_drafts(status_filter="failed")
         self.assertTrue(any(d["id"] == draft_id for d in filtered_failed))
 
+        # 8. Test backfilling author URN and auto-recovering failed drafts
+        from modules.storage import update_empty_author_urn_drafts
+        mark_draft_failed(draft_id, error_msg="Could not determine LinkedIn author URN: HTTP 401")
+        backfilled = update_empty_author_urn_drafts("TEST_PERSON_123", access_token="tok_123")
+        self.assertGreaterEqual(backfilled, 1)
+        recovered_draft = get_draft_by_id(draft_id)
+        self.assertEqual(recovered_draft["author_urn"], "urn:li:person:TEST_PERSON_123")
+        self.assertEqual(recovered_draft["status"], "scheduled")
+        self.assertIsNone(recovered_draft["publish_error"])
+
         # Clean up
         delete_draft(draft_id)
 

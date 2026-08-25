@@ -75,6 +75,7 @@ from modules.storage import (
     schedule_draft,
     toggle_favorite,
     update_draft,
+    update_empty_author_urn_drafts,
 )
 from modules.time_utils import (
     POPULAR_TIMEZONES,
@@ -86,6 +87,19 @@ from modules.time_utils import (
     user_dt_to_utc_iso,
     utc_iso_to_user_dt,
 )
+
+
+def resolve_current_author_urn(explicit_urn: Optional[str] = None) -> str:
+    """Resolve the active LinkedIn person/author URN with normalized urn:li:person: prefix."""
+    raw = (
+        (explicit_urn or "").strip()
+        or (st.session_state.get("cached_linkedin_urn") or "").strip()
+        or (st.session_state.get("linkedin_profile", {}) or {}).get("urn", "").strip()
+        or (os.getenv("LINKEDIN_AUTHOR_URN") or "").strip()
+    )
+    if raw:
+        return raw if raw.startswith("urn:li:") else f"urn:li:person:{raw}"
+    return ""
 
 # Page configuration
 st.set_page_config(
@@ -141,14 +155,20 @@ if stored_vault and isinstance(stored_vault, dict) and not st.session_state.get(
     if stored_vault.get("linkedin_token"):
         st.session_state.linkedin_access_token = stored_vault["linkedin_token"]
         st.session_state.cached_linkedin_token = stored_vault["linkedin_token"]
+        if stored_vault.get("linkedin_urn"):
+            st.session_state.cached_linkedin_urn = stored_vault["linkedin_urn"]
         if stored_vault.get("linkedin_profile"):
             st.session_state.linkedin_profile = stored_vault["linkedin_profile"]
+            if stored_vault["linkedin_profile"].get("urn"):
+                st.session_state.cached_linkedin_urn = stored_vault["linkedin_profile"]["urn"]
         elif "linkedin_profile" not in st.session_state or not st.session_state.linkedin_profile:
             p = get_linkedin_user_profile(stored_vault["linkedin_token"])
             if p.get("success"):
                 st.session_state.linkedin_profile = p
+                if p.get("urn"):
+                    st.session_state.cached_linkedin_urn = p["urn"]
             else:
-                st.session_state.linkedin_profile = {"name": "Connected User", "urn": "", "success": True}
+                st.session_state.linkedin_profile = {"name": "Connected User", "urn": stored_vault.get("linkedin_urn", ""), "success": True}
     if stored_vault.get("linkedin_urn"):
         st.session_state.cached_linkedin_urn = stored_vault["linkedin_urn"]
     if stored_vault.get("persona"):
@@ -173,14 +193,29 @@ if "code" in st.query_params:
                 redirect_uri=redirect_uri_val,
             )
             if res["success"]:
-                st.session_state.linkedin_access_token = res["access_token"]
-                st.session_state.cached_linkedin_token = res["access_token"]
-                # Auto fetch and store connected user profile in current session
-                profile = get_linkedin_user_profile(res["access_token"])
+                token_val = res["access_token"]
+                st.session_state.linkedin_access_token = token_val
+                st.session_state.cached_linkedin_token = token_val
+                
+                # If extracted directly from OpenID JWT id_token
+                extracted_urn = res.get("author_urn") or ""
+                if extracted_urn:
+                    st.session_state.cached_linkedin_urn = extracted_urn
+                
+                profile = get_linkedin_user_profile(token_val)
                 if profile.get("success"):
                     st.session_state.linkedin_profile = profile
+                    if profile.get("urn"):
+                        st.session_state.cached_linkedin_urn = profile["urn"]
                 else:
-                    st.session_state.linkedin_profile = {"name": "Connected User", "urn": "", "success": True}
+                    user_name = res.get("user_name") or "Connected User"
+                    st.session_state.linkedin_profile = {"name": user_name, "urn": extracted_urn, "success": True}
+                
+                # Backfill any scheduled drafts that were waiting for author URN
+                active_urn = resolve_current_author_urn()
+                if active_urn:
+                    update_empty_author_urn_drafts(active_urn, access_token=token_val)
+
                 st.query_params.clear()
                 st.success("🎉 LinkedIn Account Connected Successfully!")
                 st.rerun()
@@ -739,25 +774,51 @@ with st.sidebar:
             if st.button("🔍 Verify LinkedIn Account", use_container_width=True):
                 with st.spinner("Connecting to LinkedIn..."):
                     profile = get_linkedin_user_profile(linkedin_token_input)
+                    st.session_state.linkedin_access_token = linkedin_token_input
+                    st.session_state.cached_linkedin_token = linkedin_token_input
                     if profile.get("success"):
-                        st.session_state.linkedin_access_token = linkedin_token_input
-                        st.session_state.cached_linkedin_token = linkedin_token_input
                         st.session_state.linkedin_profile = profile
+                        if profile.get("urn"):
+                            st.session_state.cached_linkedin_urn = profile["urn"]
+                            update_empty_author_urn_drafts(profile["urn"], access_token=linkedin_token_input)
                         st.success(f"Connected as **{profile['name']}**!")
                     else:
-                        st.session_state.linkedin_access_token = linkedin_token_input
-                        st.session_state.cached_linkedin_token = linkedin_token_input
                         st.session_state.linkedin_profile = {"name": "Connected User", "urn": "", "success": True}
-                        st.success("Connected token successfully!")
+                        st.info("Connected token successfully! (Note: LinkedIn profile read is restricted on your token)")
                     st.rerun()
     
-    env_linkedin_urn = st.session_state.get("cached_linkedin_urn") or os.getenv("LINKEDIN_AUTHOR_URN", "")
-    linkedin_urn_input = st.text_input(
-        "LinkedIn Member URN (Optional)",
-        value=env_linkedin_urn,
-        placeholder="urn:li:person:YOUR_ID or leave blank for auto-detect",
-        help="Optional: Only needed if your token has 'w_member_social' without 'openid/profile'.",
+    current_urn_val = (
+        st.session_state.get("cached_linkedin_urn")
+        or (st.session_state.get("linkedin_profile") or {}).get("urn", "")
+        or os.getenv("LINKEDIN_AUTHOR_URN", "")
     )
+    linkedin_urn_input = st.text_input(
+        "LinkedIn Member URN / Person ID",
+        value=current_urn_val,
+        placeholder="urn:li:person:YOUR_ID or just your member ID",
+        help="Your LinkedIn Author URN. Required for auto-publishing when your browser tab is closed.",
+    )
+    if linkedin_urn_input and linkedin_urn_input.strip():
+        clean_urn = linkedin_urn_input.strip()
+        if not clean_urn.startswith("urn:li:"):
+            clean_urn = f"urn:li:person:{clean_urn}"
+        if st.session_state.get("cached_linkedin_urn") != clean_urn:
+            st.session_state.cached_linkedin_urn = clean_urn
+            active_tok = session_linkedin_token or linkedin_token_input or ""
+            recovered_count = update_empty_author_urn_drafts(clean_urn, access_token=active_tok or None)
+            if recovered_count > 0:
+                st.toast(f"✅ Auto-updated {recovered_count} draft(s) with your Member URN!", icon="🚀")
+
+    # If user has a token but no author URN is known, warn them proactively
+    has_active_token = bool((session_linkedin_token or linkedin_token_input or "").strip())
+    has_resolved_urn = bool((current_urn_val or linkedin_urn_input or "").strip())
+    if has_active_token and not has_resolved_urn:
+        st.warning(
+            "⚠️ **Member URN needed for Auto-Publishing:**\n\n"
+            "Your token only has post permissions (`w_member_social`) without profile read permissions (`openid`).\n\n"
+            "Please paste your **LinkedIn Member URN / ID** above (e.g. `urn:li:person:YOUR_ID` or your member ID) so the background worker can publish when your browser tab is closed.",
+            icon="⚠️",
+        )
 
     # Auto-Post Scheduled Queue Status in Sidebar
     st.divider()
@@ -1390,6 +1451,7 @@ with tab_studio:
                         draft_title = story_info.get("title", edited_text.split("\n")[0][:60])
                         # Store in UTC ISO for universal accuracy
                         utc_iso_string = user_dt_to_utc_iso(selected_local_dt, user_tz_name)
+                        resolved_urn = resolve_current_author_urn(linkedin_urn_input if 'linkedin_urn_input' in locals() else None)
                         d_id = save_draft(
                             title=draft_title,
                             full_content=edited_text,
@@ -1406,7 +1468,7 @@ with tab_studio:
                             status="scheduled",
                             scheduled_at=utc_iso_string,
                             access_token=active_token,
-                            author_urn=linkedin_urn_input or "",
+                            author_urn=resolved_urn or "",
                         )
                         st.balloons()
                         st.success(f"🎉 Post scheduled as Draft #{d_id}! It will automatically publish on **{formatted_target_str}**.")
@@ -1572,7 +1634,8 @@ with tab_history:
                                     st.error("Please select a future time.")
                                 else:
                                     utc_iso = user_dt_to_utc_iso(new_combined_local, user_tz_name)
-                                    schedule_draft(d_id, scheduled_at_iso=utc_iso, access_token=active_token, author_urn=linkedin_urn_input or None)
+                                    resolved_urn = resolve_current_author_urn(linkedin_urn_input if 'linkedin_urn_input' in locals() else None)
+                                    schedule_draft(d_id, scheduled_at_iso=utc_iso, access_token=active_token, author_urn=resolved_urn or None)
                                     st.success(f"Post #{d_id} rescheduled for {format_for_user(new_combined_local, user_tz_name)}!")
                                     st.rerun()
 
@@ -1613,7 +1676,8 @@ with tab_history:
                                 st.warning("Please connect your LinkedIn account in the sidebar first!")
                             else:
                                 utc_iso = user_dt_to_utc_iso(target_sd_local, user_tz_name)
-                                schedule_draft(d_id, scheduled_at_iso=utc_iso, access_token=active_token, author_urn=linkedin_urn_input or None)
+                                resolved_urn = resolve_current_author_urn(linkedin_urn_input if 'linkedin_urn_input' in locals() else None)
+                                schedule_draft(d_id, scheduled_at_iso=utc_iso, access_token=active_token, author_urn=resolved_urn or None)
                                 st.success(f"Draft #{d_id} scheduled for {format_for_user(target_sd_local, user_tz_name)}!")
                                 st.rerun()
 

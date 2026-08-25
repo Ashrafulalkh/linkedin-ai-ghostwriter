@@ -313,5 +313,52 @@ class TestLinkedInAPI(unittest.TestCase):
         self.assertFalse(pub_res["success"])
 
 
+class TestTimeUtils(unittest.TestCase):
+    """Test computer timezone synchronization and datetime formatting."""
+
+    def test_timezone_resolution(self):
+        from modules.time_utils import get_timezone, get_user_now
+        tz_london = get_timezone("Europe/London")
+        self.assertEqual(tz_london.key, "Europe/London")
+        
+        tz_ny = get_timezone("America/New_York")
+        self.assertEqual(tz_ny.key, "America/New_York")
+
+        # Invalid fallback
+        tz_fallback = get_timezone("Invalid/NonExistent_Zone")
+        self.assertEqual(tz_fallback.key, "UTC")
+
+        now_london = get_user_now("Europe/London")
+        self.assertEqual(now_london.tzinfo.key, "Europe/London")
+
+    def test_user_dt_to_utc_and_back(self):
+        from modules.time_utils import user_dt_to_utc_iso, utc_iso_to_user_dt, format_for_user
+        
+        # 10:00 AM in London (UTC+1 during BST)
+        local_dt = datetime(2026, 8, 25, 10, 0, 0)
+        utc_iso = user_dt_to_utc_iso(local_dt, "Europe/London")
+        self.assertIn("09:00:00", utc_iso) # 09:00 UTC is 10:00 BST
+
+        # Convert back
+        recovered_dt = utc_iso_to_user_dt(utc_iso, "Europe/London")
+        self.assertEqual(recovered_dt.hour, 10)
+        self.assertEqual(recovered_dt.minute, 0)
+
+        # Formatting
+        formatted = format_for_user(utc_iso, "Europe/London")
+        self.assertIn("10:00 AM", formatted)
+        self.assertIn("Aug 25, 2026", formatted)
+
+    def test_relative_countdown(self):
+        from modules.time_utils import format_relative_countdown, user_dt_to_utc_iso, get_user_now
+        
+        user_now = get_user_now("Europe/London")
+        future_dt = user_now + timedelta(hours=3, minutes=15)
+        future_utc_iso = user_dt_to_utc_iso(future_dt, "Europe/London")
+        
+        countdown = format_relative_countdown(future_utc_iso, "Europe/London")
+        self.assertIn("in 3h 1", countdown)
+
+
 if __name__ == "__main__":
     unittest.main()

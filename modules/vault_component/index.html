@@ -24,6 +24,19 @@ function setFrameHeight(height) {
 
 const VAULT_STORAGE_KEY = "ghostwriter_local_vault_v2";
 
+function getClientTimezoneInfo() {
+    let tz = "UTC";
+    try {
+        tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch(e) {}
+    const offsetMinutes = -new Date().getTimezoneOffset();
+    return {
+        _client_timezone: tz,
+        _client_tz_offset_minutes: offsetMinutes,
+        _client_iso: new Date().toISOString()
+    };
+}
+
 function handleRender(event) {
     if (!event.data || event.data.type !== "streamlit:render") return;
     
@@ -31,6 +44,7 @@ function handleRender(event) {
     const action = args.action || "read";
     const payload = args.payload || null;
     const now = Date.now();
+    const tzMeta = getClientTimezoneInfo();
     
     if (action === "save" && payload) {
         try {
@@ -40,16 +54,18 @@ function handleRender(event) {
                 data: payload
             };
             localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(wrapper));
-            setComponentValue(payload);
+            setComponentValue(Object.assign({}, tzMeta, payload));
         } catch (e) {
             console.error("Vault save error:", e);
+            setComponentValue(tzMeta);
         }
     } else if (action === "clear") {
         try {
             localStorage.removeItem(VAULT_STORAGE_KEY);
-            setComponentValue(null);
+            setComponentValue(tzMeta);
         } catch (e) {
             console.error("Vault clear error:", e);
+            setComponentValue(tzMeta);
         }
     } else {
         // Read action
@@ -58,18 +74,18 @@ function handleRender(event) {
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (parsed.expires_at && parsed.expires_at > now) {
-                    setComponentValue(parsed.data);
+                    setComponentValue(Object.assign({}, tzMeta, parsed.data));
                 } else {
                     // Expired
                     localStorage.removeItem(VAULT_STORAGE_KEY);
-                    setComponentValue(null);
+                    setComponentValue(tzMeta);
                 }
             } else {
-                setComponentValue(null);
+                setComponentValue(tzMeta);
             }
         } catch (e) {
             console.error("Vault read error:", e);
-            setComponentValue(null);
+            setComponentValue(tzMeta);
         }
     }
 }

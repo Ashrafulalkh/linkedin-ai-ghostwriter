@@ -218,6 +218,8 @@ def mark_draft_published(
     """Mark a draft as successfully published to LinkedIn."""
     conn = get_db_connection()
     now = datetime.now().isoformat()
+    urn_val = str(post_urn) if post_urn is not None else None
+    url_val = str(post_url) if post_url is not None else None
     with conn:
         conn.execute(
             """
@@ -230,7 +232,7 @@ def mark_draft_published(
                 updated_at = ?
             WHERE id = ?
             """,
-            (now, post_urn, post_url, now, draft_id),
+            (now, urn_val, url_val, now, int(draft_id)),
         )
     conn.close()
     return True
@@ -240,6 +242,7 @@ def mark_draft_failed(draft_id: int, error_msg: str) -> bool:
     """Mark a draft as failed to auto-publish with the error reason."""
     conn = get_db_connection()
     now = datetime.now().isoformat()
+    err_str = str(error_msg or "Unknown error")
     with conn:
         conn.execute(
             """
@@ -249,31 +252,45 @@ def mark_draft_failed(draft_id: int, error_msg: str) -> bool:
                 updated_at = ?
             WHERE id = ?
             """,
-            (error_msg, now, draft_id),
+            (err_str, now, int(draft_id)),
         )
     conn.close()
     return True
 
 
 def get_due_scheduled_drafts(now_iso: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Retrieve all drafts scheduled for publishing on or before now_iso."""
+    """Retrieve all drafts scheduled for publishing on or before current UTC time."""
     init_db()
     conn = get_db_connection()
-    current_time = now_iso or datetime.now().isoformat()
     cursor = conn.execute(
         """
         SELECT * FROM drafts
         WHERE status = 'scheduled'
           AND scheduled_at IS NOT NULL
-          AND scheduled_at <= ?
         ORDER BY scheduled_at ASC
-        """,
-        (current_time,),
+        """
     )
     rows = cursor.fetchall()
-    results = [dict(row) for row in rows]
     conn.close()
-    return results
+
+    try:
+        from modules.time_utils import parse_datetime_safe
+    except ImportError:
+        from .time_utils import parse_datetime_safe
+
+    from datetime import timezone
+    now_utc = parse_datetime_safe(now_iso) if now_iso else datetime.now(timezone.utc)
+    due_drafts = []
+
+    for row in rows:
+        d_dict = dict(row)
+        sched_at_str = d_dict.get("scheduled_at")
+        if sched_at_str:
+            target_utc = parse_datetime_safe(sched_at_str)
+            if target_utc <= now_utc:
+                due_drafts.append(d_dict)
+
+    return due_drafts
 
 
 def get_all_drafts(

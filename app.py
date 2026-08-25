@@ -76,6 +76,15 @@ from modules.storage import (
     toggle_favorite,
     update_draft,
 )
+from modules.time_utils import (
+    POPULAR_TIMEZONES,
+    format_for_user,
+    format_relative_countdown,
+    get_timezone,
+    get_user_now,
+    user_dt_to_utc_iso,
+    utc_iso_to_user_dt,
+)
 
 # Page configuration
 st.set_page_config(
@@ -100,8 +109,16 @@ if st.session_state.get("_vault_clear_requested"):
     _browser_vault(action="clear", key="vault_clear_act")
     st.session_state._vault_clear_requested = False
 
-# Read stored credentials from client browser
+# Read stored credentials and computer timezone from client browser
 stored_vault = _browser_vault(action="read", key="vault_reader_act")
+
+# Detect user's computer timezone if sent by browser component
+if stored_vault and isinstance(stored_vault, dict):
+    if stored_vault.get("_client_timezone"):
+        detected_tz = stored_vault["_client_timezone"]
+        st.session_state.client_timezone = detected_tz
+        if "user_selected_timezone" not in st.session_state or not st.session_state.user_selected_timezone:
+            st.session_state.user_selected_timezone = detected_tz
 
 if stored_vault and isinstance(stored_vault, dict) and not st.session_state.get("vault_initialized"):
     if stored_vault.get("gemini_key"):
@@ -738,16 +755,34 @@ with st.sidebar:
     # Auto-Post Scheduled Queue Status in Sidebar
     st.divider()
     st.markdown("### ⏰ Auto-Post Queue")
+
+    # Resolve User Timezone
+    detected_tz = st.session_state.get("client_timezone") or "UTC"
+    current_selected_tz = st.session_state.get("user_selected_timezone") or detected_tz
+    tz_list = list(POPULAR_TIMEZONES)
+    if current_selected_tz not in tz_list:
+        tz_list.insert(1, current_selected_tz)
+
+    user_tz_choice = st.selectbox(
+        "Your Computer Timezone",
+        options=tz_list,
+        index=tz_list.index(current_selected_tz) if current_selected_tz in tz_list else 0,
+        help="Auto-detected from your browser. All post schedules will align with this clock.",
+    )
+    st.session_state.user_selected_timezone = user_tz_choice
+    user_clock = get_user_now(user_tz_choice)
+    st.caption(f"🕒 Your Clock: **{user_clock.strftime('%I:%M:%S %p')}** (`{user_clock.strftime('%Z')}`)")
+
     sidebar_scheduled = get_all_drafts(status_filter="scheduled")
     if sidebar_scheduled:
-        st.success(f"⏳ **{len(sidebar_scheduled)} post(s)** scheduled for auto-publishing", icon="⏰")
+        st.success(f"⏳ **{len(sidebar_scheduled)} post(s)** scheduled", icon="⏰")
         for sp in sidebar_scheduled[:3]:
-            sched_ts = sp.get('scheduled_at', '')[:16].replace('T', ' ')
-            st.caption(f"• **{sp['title'][:26]}...**\n  🕒 `{sched_ts}`")
+            sched_formatted = format_for_user(sp.get('scheduled_at') or '', user_tz_choice, fmt="%b %d, %I:%M %p")
+            st.caption(f"• **{sp['title'][:24]}...**\n  🕒 `{sched_formatted}`")
         if len(sidebar_scheduled) > 3:
             st.caption(f"*+ {len(sidebar_scheduled) - 3} more in History tab*")
     else:
-        st.caption("No posts currently scheduled. Schedule posts in Studio or Drafts tab.")
+        st.caption("No posts currently scheduled.")
 
     # 3-Day Browser Vault Controls
     st.divider()
@@ -1262,61 +1297,60 @@ with tab_studio:
                 )
 
         with tab_pub_schedule:
-            st.caption("Select a future date and time for our background daemon to automatically publish your post.")
-            now_dt = datetime.now()
+            user_tz_name = st.session_state.get("user_selected_timezone") or st.session_state.get("client_timezone") or "UTC"
+            user_now_dt = get_user_now(user_tz_name)
+            st.caption(f"Select a future date & time according to your local computer clock (**{user_now_dt.strftime('%I:%M %p %Z')}**).")
 
             # Preset Buttons
             pres_col1, pres_col2, pres_col3, pres_col4 = st.columns(4)
             with pres_col1:
                 if st.button("⚡ In 1 Hour", key="studio_preset_1h", use_container_width=True):
-                    tgt = now_dt + timedelta(hours=1)
+                    tgt = user_now_dt + timedelta(hours=1)
                     st.session_state.studio_sched_date = tgt.date()
                     st.session_state.studio_sched_time = tgt.time().replace(second=0, microsecond=0)
                     st.rerun()
             with pres_col2:
                 if st.button("🌅 Tomorrow 9 AM", key="studio_preset_tom9", use_container_width=True):
-                    tgt = (now_dt + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+                    tgt = (user_now_dt + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
                     st.session_state.studio_sched_date = tgt.date()
                     st.session_state.studio_sched_time = tgt.time()
                     st.rerun()
             with pres_col3:
                 if st.button("🌇 Tomorrow 5 PM", key="studio_preset_tom5", use_container_width=True):
-                    tgt = (now_dt + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+                    tgt = (user_now_dt + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
                     st.session_state.studio_sched_date = tgt.date()
                     st.session_state.studio_sched_time = tgt.time()
                     st.rerun()
             with pres_col4:
                 if st.button("📆 In 2 Days 10 AM", key="studio_preset_2d10", use_container_width=True):
-                    tgt = (now_dt + timedelta(days=2)).replace(hour=10, minute=0, second=0, microsecond=0)
+                    tgt = (user_now_dt + timedelta(days=2)).replace(hour=10, minute=0, second=0, microsecond=0)
                     st.session_state.studio_sched_date = tgt.date()
                     st.session_state.studio_sched_time = tgt.time()
                     st.rerun()
 
             col_s_date, col_s_time = st.columns(2)
             with col_s_date:
-                default_date = st.session_state.get("studio_sched_date", (now_dt + timedelta(hours=2)).date())
-                sched_date = st.date_input("Scheduled Date", value=default_date, min_value=now_dt.date(), key="studio_sched_date_input")
+                default_date = st.session_state.get("studio_sched_date", (user_now_dt + timedelta(hours=2)).date())
+                sched_date = st.date_input("Scheduled Date", value=default_date, min_value=user_now_dt.date(), key="studio_sched_date_input")
             with col_s_time:
-                default_time = st.session_state.get("studio_sched_time", (now_dt + timedelta(hours=2)).time().replace(second=0, microsecond=0))
+                default_time = st.session_state.get("studio_sched_time", (user_now_dt + timedelta(hours=2)).time().replace(second=0, microsecond=0))
                 sched_time = st.time_input("Scheduled Time", value=default_time, key="studio_sched_time_input")
 
-            selected_target_dt = datetime.combine(sched_date, sched_time)
-            time_diff = selected_target_dt - now_dt
+            selected_local_dt = datetime.combine(sched_date, sched_time).replace(tzinfo=get_timezone(user_tz_name))
+            time_diff = selected_local_dt - user_now_dt
 
             if time_diff.total_seconds() <= 0:
                 st.warning("⚠️ Target date and time must be in the future.")
             else:
-                hours_left = int(time_diff.total_seconds() // 3600)
-                mins_left = int((time_diff.total_seconds() % 3600) // 60)
-                human_diff = f"in {hours_left}h {mins_left}m" if hours_left > 0 else f"in {mins_left}m"
-                formatted_target_str = selected_target_dt.strftime("%A, %b %d, %Y at %I:%M %p")
+                human_diff = format_relative_countdown(user_dt_to_utc_iso(selected_local_dt, user_tz_name), user_tz_name)
+                formatted_target_str = format_for_user(selected_local_dt, user_tz_name, fmt="%A, %b %d, %Y at %I:%M %p")
                 
                 st.markdown(
                     f"""
                     <div class="schedule-info-banner">
                         <div>🕒 <b>Scheduled Target:</b> {formatted_target_str} (<b>{human_diff}</b>)</div>
                         <div style="font-size:0.84rem; opacity:0.85; margin-top:4px;">
-                            The post will automatically publish to your connected LinkedIn profile when the background daemon detects it.
+                            Aligned with your local computer clock (<code>{user_tz_name}</code>). The background daemon will automatically publish at this exact minute.
                         </div>
                     </div>
                     """,
@@ -1331,6 +1365,8 @@ with tab_studio:
                     else:
                         story_info = st.session_state.selected_story or {}
                         draft_title = story_info.get("title", edited_text.split("\n")[0][:60])
+                        # Store in UTC ISO for universal accuracy
+                        utc_iso_string = user_dt_to_utc_iso(selected_local_dt, user_tz_name)
                         d_id = save_draft(
                             title=draft_title,
                             full_content=edited_text,
@@ -1345,7 +1381,7 @@ with tab_studio:
                             question=gen_data.get("discussion_question", ""),
                             hashtags=" ".join(gen_data.get("hashtags", [])),
                             status="scheduled",
-                            scheduled_at=selected_target_dt.isoformat(),
+                            scheduled_at=utc_iso_string,
                             access_token=active_token,
                             author_urn=linkedin_urn_input or "",
                         )
@@ -1458,7 +1494,8 @@ with tab_history:
         st.info("No posts found matching your current filter criteria.")
     else:
         active_token = linkedin_token_input or session_linkedin_token
-        now_dt = datetime.now()
+        user_tz_name = st.session_state.get("user_selected_timezone") or st.session_state.get("client_timezone") or "UTC"
+        user_now_dt = get_user_now(user_tz_name)
 
         for d in stored_drafts:
             d_id = d["id"]
@@ -1466,43 +1503,29 @@ with tab_history:
             star_label = "⭐" if is_fav else "☆"
             d_status = (d.get("status") or "draft").lower()
             
-            # Format header status badge
+            # Format header status badge with user's local timezone
             if d_status == "scheduled":
-                sched_at_str = d.get("scheduled_at") or ""
-                time_badge = sched_at_str[:16].replace("T", " ") if sched_at_str else ""
-                expander_title = f"⏳ [SCHEDULED: {time_badge}] {star_label} {d['title']}"
+                sched_formatted = format_for_user(d.get("scheduled_at") or "", user_tz_name, fmt="%b %d, %I:%M %p")
+                expander_title = f"⏳ [SCHEDULED: {sched_formatted}] {star_label} {d['title']}"
             elif d_status == "published":
-                pub_at_str = d.get("published_at") or ""
-                time_badge = pub_at_str[:16].replace("T", " ") if pub_at_str else ""
-                expander_title = f"✅ [PUBLISHED] {star_label} {d['title']} ({time_badge})"
+                pub_formatted = format_for_user(d.get("published_at") or "", user_tz_name, fmt="%b %d, %I:%M %p")
+                expander_title = f"✅ [PUBLISHED: {pub_formatted}] {star_label} {d['title']}"
             elif d_status == "failed":
                 expander_title = f"❌ [AUTO-PUBLISH FAILED] {star_label} {d['title']}"
             else:
-                created_badge = d.get('created_at', '')[:10]
-                expander_title = f"📝 [{d.get('tone', 'Post')}] {star_label} {d['title']} ({created_badge})"
+                created_formatted = format_for_user(d.get('created_at', ''), user_tz_name, fmt="%b %d")
+                expander_title = f"📝 [{d.get('tone', 'Post')}] {star_label} {d['title']} ({created_formatted})"
 
             with st.expander(expander_title, expanded=False):
                 # Status banner inside expander
                 if d_status == "scheduled":
-                    sched_dt_iso = d.get("scheduled_at")
-                    countdown_desc = ""
-                    if sched_dt_iso:
-                        try:
-                            s_dt = datetime.fromisoformat(sched_dt_iso)
-                            delta = s_dt - now_dt
-                            if delta.total_seconds() > 0:
-                                hrs = int(delta.total_seconds() // 3600)
-                                mins = int((delta.total_seconds() % 3600) // 60)
-                                countdown_desc = f" • Auto-publishing in **{hrs}h {mins}m**"
-                            else:
-                                countdown_desc = " • *Due now, background worker processing...*"
-                        except Exception:
-                            pass
+                    countdown_desc = format_relative_countdown(d.get("scheduled_at") or "", user_tz_name)
+                    formatted_full_sched = format_for_user(d.get("scheduled_at") or "", user_tz_name, fmt="%A, %b %d, %Y at %I:%M %p")
 
                     st.markdown(
                         f"""
                         <div class="schedule-info-banner">
-                            <div><span class="status-badge status-scheduled">⏳ Scheduled</span> &nbsp; Target: <b>{d.get('scheduled_at', '')[:19].replace('T', ' ')}</b>{countdown_desc}</div>
+                            <div><span class="status-badge status-scheduled">⏳ Scheduled</span> &nbsp; Target: <b>{formatted_full_sched}</b> • <b>{countdown_desc}</b></div>
                         </div>
                         """,
                         unsafe_allow_html=True,
@@ -1518,19 +1541,20 @@ with tab_history:
                     with col_sched_ctrl2:
                         with st.popover("✏️ Reschedule Time", use_container_width=True):
                             st.markdown(f"**Reschedule Post #{d_id}**")
-                            resched_d = st.date_input("New Date", value=(now_dt + timedelta(hours=1)).date(), min_value=now_dt.date(), key=f"resched_d_{d_id}")
-                            resched_t = st.time_input("New Time", value=(now_dt + timedelta(hours=1)).time().replace(second=0, microsecond=0), key=f"resched_t_{d_id}")
-                            new_combined = datetime.combine(resched_d, resched_t)
+                            resched_d = st.date_input("New Date", value=(user_now_dt + timedelta(hours=1)).date(), min_value=user_now_dt.date(), key=f"resched_d_{d_id}")
+                            resched_t = st.time_input("New Time", value=(user_now_dt + timedelta(hours=1)).time().replace(second=0, microsecond=0), key=f"resched_t_{d_id}")
+                            new_combined_local = datetime.combine(resched_d, resched_t).replace(tzinfo=get_timezone(user_tz_name))
                             if st.button("Confirm Reschedule", key=f"btn_confirm_resched_{d_id}", type="primary", use_container_width=True):
-                                if new_combined <= now_dt:
+                                if new_combined_local <= user_now_dt:
                                     st.error("Please select a future time.")
                                 else:
-                                    schedule_draft(d_id, scheduled_at_iso=new_combined.isoformat(), access_token=active_token, author_urn=linkedin_urn_input or None)
-                                    st.success(f"Post #{d_id} rescheduled for {new_combined.strftime('%b %d, %Y at %I:%M %p')}!")
+                                    utc_iso = user_dt_to_utc_iso(new_combined_local, user_tz_name)
+                                    schedule_draft(d_id, scheduled_at_iso=utc_iso, access_token=active_token, author_urn=linkedin_urn_input or None)
+                                    st.success(f"Post #{d_id} rescheduled for {format_for_user(new_combined_local, user_tz_name)}!")
                                     st.rerun()
 
                 elif d_status == "published":
-                    pub_ts = d.get("published_at", "")[:19].replace("T", " ")
+                    pub_ts = format_for_user(d.get("published_at") or "", user_tz_name, fmt="%A, %b %d, %Y at %I:%M %p")
                     post_link_html = f"&nbsp;|&nbsp; <a href='{d.get('post_url')}' target='_blank' style='color:#0A66C2; font-weight:600;'>View Live Post on LinkedIn ↗</a>" if d.get("post_url") else ""
                     st.markdown(
                         f"""
@@ -1554,19 +1578,20 @@ with tab_history:
                     with st.expander("⏰ Schedule This Draft for Auto-Publishing", expanded=False):
                         col_sd1, col_sd2 = st.columns(2)
                         with col_sd1:
-                            sd_d = st.date_input("Date", value=(now_dt + timedelta(hours=2)).date(), min_value=now_dt.date(), key=f"draft_sd_{d_id}")
+                            sd_d = st.date_input("Date", value=(user_now_dt + timedelta(hours=2)).date(), min_value=user_now_dt.date(), key=f"draft_sd_{d_id}")
                         with col_sd2:
-                            sd_t = st.time_input("Time", value=(now_dt + timedelta(hours=2)).time().replace(second=0, microsecond=0), key=f"draft_st_{d_id}")
+                            sd_t = st.time_input("Time", value=(user_now_dt + timedelta(hours=2)).time().replace(second=0, microsecond=0), key=f"draft_st_{d_id}")
                         
-                        target_sd = datetime.combine(sd_d, sd_t)
+                        target_sd_local = datetime.combine(sd_d, sd_t).replace(tzinfo=get_timezone(user_tz_name))
                         if st.button("🗓️ Schedule This Post", key=f"btn_sched_draft_{d_id}", type="primary", use_container_width=True):
-                            if target_sd <= now_dt:
+                            if target_sd_local <= user_now_dt:
                                 st.error("Please pick a date and time in the future.")
                             elif not active_token:
                                 st.warning("Please connect your LinkedIn account in the sidebar first!")
                             else:
-                                schedule_draft(d_id, scheduled_at_iso=target_sd.isoformat(), access_token=active_token, author_urn=linkedin_urn_input or None)
-                                st.success(f"Draft #{d_id} scheduled for {target_sd.strftime('%A, %b %d, %Y at %I:%M %p')}!")
+                                utc_iso = user_dt_to_utc_iso(target_sd_local, user_tz_name)
+                                schedule_draft(d_id, scheduled_at_iso=utc_iso, access_token=active_token, author_urn=linkedin_urn_input or None)
+                                st.success(f"Draft #{d_id} scheduled for {format_for_user(target_sd_local, user_tz_name)}!")
                                 st.rerun()
 
                 st.markdown(f"**Tone:** `{d.get('tone')}` | **Source:** `{d.get('source_type')}` | **Created:** `{d.get('created_at')}`")

@@ -544,11 +544,22 @@ if "copy_status" not in st.session_state:
 if "feed_limit" not in st.session_state:
     st.session_state.feed_limit = 15
 
+# Apply any pending editor updates before widgets are instantiated
+if "_pending_editor_content" in st.session_state and st.session_state._pending_editor_content is not None:
+    pending_text = st.session_state._pending_editor_content
+    st.session_state.post_editor_textarea = pending_text
+    st.session_state.current_editor_content = pending_text
+    st.session_state._pending_editor_content = None
+
 
 def set_editor_content(text: str):
-    """Safely updates both session state tracking and the text area widget key."""
+    """Safely updates session state tracking and sets pending content for the text area widget."""
     st.session_state.current_editor_content = text
-    st.session_state.post_editor_textarea = text
+    st.session_state._pending_editor_content = text
+    try:
+        st.session_state.post_editor_textarea = text
+    except Exception:
+        pass
 
 
 # ==========================================
@@ -1722,7 +1733,8 @@ with tab_history:
                             "url": d.get("source_url", ""),
                             "source": d.get("source_type", "Draft"),
                         }
-                        st.success(f"Post #{d_id} loaded into Studio! Switch to Tab 3.")
+                        st.toast(f"✅ Post #{d_id} loaded into Studio! Switch to Tab 3.", icon="📋")
+                        st.rerun()
                 with c_act3:
                     fav_btn_text = "Unstar" if is_fav else "⭐ Star"
                     if st.button(fav_btn_text, key=f"fav_{d_id}", use_container_width=True):

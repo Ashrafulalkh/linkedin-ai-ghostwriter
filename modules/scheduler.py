@@ -12,12 +12,20 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from modules.linkedin_api import publish_post_to_linkedin
-from modules.storage import (
-    get_due_scheduled_drafts,
-    mark_draft_failed,
-    mark_draft_published,
-)
+try:
+    from modules.linkedin_api import publish_post_to_linkedin
+    from modules.storage import (
+        get_due_scheduled_drafts,
+        mark_draft_failed,
+        mark_draft_published,
+    )
+except ImportError:
+    from .linkedin_api import publish_post_to_linkedin
+    from .storage import (
+        get_due_scheduled_drafts,
+        mark_draft_failed,
+        mark_draft_published,
+    )
 
 logger = logging.getLogger("ghostwriter.scheduler")
 if not logger.handlers:
